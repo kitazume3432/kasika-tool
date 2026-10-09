@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KASIKA メルマガ一覧 Excel化ツール</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<style>
+:root{
+  --cream:#F7F3EC; --paper:#FFFDF9; --wood:#AD8A5C; --wood-dark:#8A6B43;
+  --charcoal:#232323; --line:#E2D9CB; --muted:#7A7268; --new:#FFF1C9; --err:#B3412E;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+html,body{margin:0}
+body{background:var(--cream);color:var(--charcoal);
+  font-family:"游ゴシック体","Yu Gothic","YuGothic","Hiragino Sans","Meiryo",sans-serif;
+  font-size:15px;line-height:1.7}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 20px 64px}
+header{border-bottom:2px solid var(--charcoal);padding-bottom:14px;margin-bottom:28px}
+header h1{font-size:24px;margin:0;letter-spacing:.04em}
+header p{margin:4px 0 0;color:var(--muted);font-size:13px}
+.bm{border-left:4px solid var(--wood);padding:4px 0 4px 16px;margin-bottom:14px}
+.bmlink{display:inline-block;background:var(--wood);color:#fff;text-decoration:none;padding:8px 18px;font-weight:700;cursor:grab}
+.bmlink:focus-visible{outline:3px solid var(--charcoal);outline-offset:2px}
+details{margin-top:6px;font-size:14px}
+summary{cursor:pointer;color:var(--wood-dark)}
+#recvNote{color:var(--charcoal);background:#EFE6D6;padding:8px 12px}
+section{background:var(--paper);border:1px solid var(--line);padding:22px 24px;margin-bottom:20px}
+section h2{display:flex;align-items:baseline;gap:12px;font-size:17px;margin:0 0 12px}
+section h2 .no{color:var(--wood);font-size:22px;font-weight:700}
+section h2 .opt{font-size:12px;color:var(--muted);font-weight:400}
+.hint{font-size:13px;color:var(--muted);margin:0 0 12px}
+.drop{border:2px dashed var(--wood);background:#FBF7F0;padding:26px;text-align:center;cursor:pointer;color:var(--wood-dark)}
+.drop.over{background:#F1E7D6}
+.drop:focus-visible{outline:3px solid var(--charcoal);outline-offset:2px}
+.files{list-style:none;padding:0;margin:12px 0 0;font-size:13px}
+.files li{padding:4px 0;border-bottom:1px dotted var(--line);display:flex;justify-content:space-between;gap:10px}
+.files .bad{color:var(--err)}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+button{font:inherit;border:0;padding:10px 22px;cursor:pointer;background:var(--charcoal);color:#fff}
+button.sub{background:transparent;color:var(--charcoal);border:1px solid var(--charcoal)}
+button:disabled{opacity:.35;cursor:not-allowed}
+button:focus-visible{outline:3px solid var(--wood);outline-offset:2px}
+.summary{font-size:14px}
+.summary b{color:var(--wood-dark);font-size:18px}
+.tbl{overflow-x:auto;margin-top:14px;border:1px solid var(--line)}
+table{border-collapse:collapse;width:100%;font-size:12.5px;white-space:nowrap}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left}
+th{background:var(--charcoal);color:#fff;font-weight:600;position:sticky;top:0}
+td.num{text-align:right}
+tr.new td{background:var(--new)}
+td a{color:var(--wood-dark)}
+.badge{display:inline-block;font-size:11px;padding:0 6px;background:var(--wood);color:#fff}
+input[type=file]{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>KASIKA メルマガ一覧 Excel化ツール</h1>
+  <p>KASIKAのメルマガ一覧(campaign_list.php)から、メルマガ名・URL・配信実績を全ページ分まとめてExcelにします。データはブラウザ内だけで処理されます。</p>
+</header>
+
+<section>
+  <h2><span class="no">01</span>KASIKAから取り込む</h2>
+  <div class="bm">
+    <p class="hint"><b>はじめに1回だけ:</b>下のボタンをブラウザのブックマークバーへドラッグして登録してください(ブックマークバーが出ていない場合は <b>Ctrl+Shift+B</b>)。</p>
+    <a class="bmlink" id="bmLink" href="#">KASIKA→Excel</a>
+    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAのメルマガ一覧画面を開き、登録したブックマーク「KASIKA→Excel」をクリック。全ページを自動でめくって読み取り、このツールが別タブで開いて一覧が入ります。</p>
+  </div>
+  <p class="hint" id="recvNote" hidden></p>
+  <details>
+    <summary>うまくいかない場合:保存したHTMLから読み込む</summary>
+    <p class="hint" style="margin-top:10px">KASIKAの一覧画面で <b>Ctrl+S →「ウェブページ、HTMLのみ」</b> で保存したファイルを入れてください。複数ページ分をまとめて入れられます(重複は自動で除外)。</p>
+    <div class="drop" id="dropHtml" tabindex="0" role="button">ここにHTMLファイルをドロップ、またはクリックして選択</div>
+    <input type="file" id="fileHtml" accept=".html,.htm" multiple>
+  </details>
+  <ul class="files" id="listHtml"></ul>
+</section>
+
+<section>
+  <h2><span class="no">02</span>前回のExcelを読み込む<span class="opt">任意</span></h2>
+  <p class="hint">以前このツールで作ったExcelを入れると、今回はじめて出てきたメルマガを「新規」として黄色で表示します。前回のExcelの「メモ」列は引き継がれます。</p>
+  <div class="drop" id="dropPrev" tabindex="0" role="button">前回のExcel(.xlsx)をドロップ、またはクリックして選択</div>
+  <input type="file" id="filePrev" accept=".xlsx">
+  <ul class="files" id="listPrev"></ul>
+</section>
+
+<section>
+  <h2><span class="no">03</span>確認してExcelを保存する</h2>
+  <div class="row">
+    <div class="summary" id="summary">HTMLを読み込むと、ここに件数が表示されます。</div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button id="btnXlsx" disabled>Excelを保存</button>
+    <button id="btnClear" class="sub">読み込みをクリア</button>
+  </div>
+  <div class="tbl" id="preview" hidden></div>
+</section>
+</div>
+
+<script>
+const BASE = 'https://kasika.io/';
+const state = { pages: [], prev: null, prevName: '' };
+
+const COLS = [
+  ['isNew','新規'],['status','ステータス'],['name','メルマガ名'],['subject','メール件名'],
+  ['target','配信ターゲット'],['sendAt','配信(予定)日時'],['updatedAt','最終更新日時'],
+  ['delivered','配信数'],['opened','開封数'],['openRate','開封率'],
+  ['clicked','クリック数'],['clickRate','クリック率'],['linked','追加紐付け顧客数'],['cv','コンバージョン数'],
+  ['url','メルマガURL'],['targetUrl','配信ターゲットURL'],['csvUrl','配信結果CSV URL'],['memo','メモ']
+];
+
+function abs(href){
+  if(!href || href.startsWith('javascript')) return '';
+  try { return new URL(href, BASE).href; } catch(e){ return ''; }
+}
+const txt = el => el ? el.textContent.replace(/\s+/g,' ').trim() : '';
+function numIn(td){
+  const n = td && td.querySelector('.number');
+  if(!n) return null;
+  const v = Number(n.textContent.replace(/[^\d.-]/g,''));
+  return isNaN(v) ? null : v;
+}
+function rateIn(td){
+  const s = td && td.querySelector('small');
+  if(!s) return null;
+  const m = s.textContent.match(/([\d.]+)\s*%/);
+  return m ? Math.round(Number(m[1]) * 100) / 10000 : null;
+}
+function dateIn(td){
+  if(!td) return '';
+  const c = td.cloneNode(true);
+  c.querySelectorAll('br').forEach(b=> b.replaceWith(' '));
+  return c.textContent.replace(/\s+/g,' ').trim();
+}
+function cidOf(url){
+  const m = String(url||'').match(/[?&]cid=([0-9a-f]+)/i);
+  return m ? m[1] : String(url||'').trim();
+}
+
+function parsePage(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const table = doc.getElementById('demo-foo-addrow');
+  if(!table) return { error: 'メルマガ一覧の表が見つかりません' };
+  const tbody = table.tBodies[0];
+  const rows = tbody ? Array.from(tbody.rows) : [];
+  const out = [];
+  for(const tr of rows){
+    const td = Array.from(tr.cells);
+    if(td.length < 10) continue;
+    const nameA = td[1].querySelector('a[href*="campaign_edit"]') || td[1].querySelector('a');
+    const smalls = td[1].querySelectorAll('small');
+    let subject = '';
+    smalls.forEach((s,i)=>{ if(/件名/.test(s.textContent) && smalls[i+1]) subject = txt(smalls[i+1]); });
+    const tA = td[2].querySelector('a[href*="campaign_target_edit"]');
+    const csvA = td[5].querySelector('a[href*="csv"]');
+    const url = abs(nameA && nameA.getAttribute('href'));
+    if(!url) continue;
+    out.push({
+      isNew:'', status: txt(td[0]),
+      name: txt(td[1].querySelector('strong')) || txt(nameA),
+      subject, target: txt(tA), sendAt: dateIn(td[3]), updatedAt: dateIn(td[4]),
+      delivered: numIn(td[5]), opened: numIn(td[6]), openRate: rateIn(td[6]),
+      clicked: numIn(td[7]), clickRate: rateIn(td[7]), linked: numIn(td[8]), cv: numIn(td[9]),
+      url, targetUrl: abs(tA && tA.getAttribute('href')), csvUrl: abs(csvA && csvA.getAttribute('href')), memo:''
+    });
+  }
+  const page = txt(doc.querySelector('#currentPage'));
+  return { rows: out, page };
+}
+
+function parsePrev(buf){
+  const wb = XLSX.read(buf, { type:'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const arr = XLSX.utils.sheet_to_json(ws, { defval:'' });
+  const map = new Map();
+  for(const r of arr){
+    const u = r['メルマガURL'];
+    if(u) map.set(cidOf(u), { memo: r['メモ'] || '' });
+  }
+  return map;
+}
+
+function merged(){
+  const map = new Map();
+  for(const p of state.pages) for(const r of p.rows) if(!map.has(cidOf(r.url))) map.set(cidOf(r.url), {...r});
+  const list = Array.from(map.values());
+  for(const r of list){
+    if(state.prev){
+      const p = state.prev.get(cidOf(r.url));
+      r.isNew = p ? '' : '新規';
+      if(p) r.memo = p.memo;
+    } else r.isNew = '';
+  }
+  list.sort((a,b)=> (b.sendAt||'').localeCompare(a.sendAt||'') || (b.updatedAt||'').localeCompare(a.updatedAt||''));
+  return list;
+}
+
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(k, v){
+  if(v === null || v === undefined || v === '') return '';
+  if(k.endsWith('Rate')) return (v*100).toFixed(2)+'%';
+  return v;
+}
+
+function render(){
+  const listEl = document.getElementById('listHtml');
+  listEl.innerHTML = state.pages.map(p =>
+    `<li><span>${esc(p.file)}</span><span class="${p.error?'bad':''}">${p.error ? esc(p.error) : (p.page?p.page+'ページ目 ':'')+p.rows.length+'件'}</span></li>`
+  ).join('');
+  document.getElementById('listPrev').innerHTML = state.prev
+    ? `<li><span>${esc(state.prevName)}</span><span>${state.prev.size}件を照合に使用</span></li>` : '';
+
+  const rows = merged();
+  const sum = document.getElementById('summary');
+  const btn = document.getElementById('btnXlsx');
+  const pv = document.getElementById('preview');
+  if(!rows.length){
+    sum.textContent = state.pages.length ? '読み込んだファイルからメルマガが見つかりませんでした。保存したページがメルマガ一覧画面か確認してください。' : 'HTMLを読み込むと、ここに件数が表示されます。';
+    btn.disabled = true; pv.hidden = true; return;
+  }
+  const nNew = rows.filter(r=>r.isNew).length;
+  sum.innerHTML = `合計 <b>${rows.length}</b> 件` + (state.prev ? ` / うち新規 <b>${nNew}</b> 件` : '');
+  btn.disabled = false;
+  const head = COLS.filter(([k])=> state.prev || k!=='isNew');
+  pv.hidden = false;
+  pv.innerHTML = '<table><thead><tr>' + head.map(([,l])=>`<th>${l}</th>`).join('') + '</tr></thead><tbody>' +
+    rows.map(r => `<tr class="${r.isNew?'new':''}">` + head.map(([k])=>{
+      const v = r[k];
+      if(k==='isNew') return `<td>${v?'<span class="badge">新規</span>':''}</td>`;
+      if(/url$/i.test(k)) return `<td>${v?`<a href="${esc(v)}" target="_blank" rel="noopener">開く</a>`:''}</td>`;
+      const num = typeof v === 'number';
+      return `<td class="${num?'num':''}">${esc(fmt(k,v))}</td>`;
+    }).join('') + '</tr>').join('') + '</tbody></table>';
+}
+
+function buildWorkbook(rows){
+  const aoa = [COLS.map(c=>c[1])];
+  for(const r of rows) aoa.push(COLS.map(([k])=> r[k] ?? ''));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const font = { name:'游ゴシック', sz:10 };
+  const border = { bottom:{ style:'thin', color:{ rgb:'E2D9CB' } } };
+  for(let c=0;c<COLS.length;c++){
+    const ref = XLSX.utils.encode_cell({r:0,c});
+    ws[ref].s = { font:{...font, bold:true, color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'232323'}}, alignment:{vertical:'center'} };
+  }
+  rows.forEach((r,i)=>{
+    COLS.forEach(([k],c)=>{
+      const ref = XLSX.utils.encode_cell({r:i+1,c});
+      if(!ws[ref]) ws[ref] = { t:'s', v:'' };
+      const cell = ws[ref];
+      cell.s = { font:{...font}, border };
+      if(r.isNew) cell.s.fill = { fgColor:{ rgb:'FFF1C9' } };
+      if(k.endsWith('Rate') && typeof r[k]==='number') cell.z = '0.00%';
+      if(/url$/i.test(k) && r[k]){ cell.l = { Target:r[k] }; cell.s.font = {...font, color:{rgb:'0563C1'}, underline:true}; }
+    });
+  });
+  const widths = { isNew:6, status:9, name:34, subject:50, target:16, sendAt:16, updatedAt:16, delivered:8, opened:8, openRate:8, clicked:9, clickRate:9, linked:10, cv:10, url:40, targetUrl:40, csvUrl:40, memo:30 };
+  ws['!cols'] = COLS.map(([k])=>({ wch: widths[k] || 12 }));
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:rows.length, c:COLS.length-1}}) };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'メルマガ一覧');
+  return wb;
+}
+
+function saveXlsx(){
+  const rows = merged();
+  const wb = buildWorkbook(rows);
+  const d = new Date();
+  const ymd = d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  XLSX.writeFile(wb, `KASIKAメルマガ一覧_${ymd}.xlsx`);
+}
+
+function readText(file){ return new Promise((ok,ng)=>{ const r=new FileReader(); r.onload=()=>ok(r.result); r.onerror=ng; r.readAsText(file,'utf-8'); }); }
+function readBuf(file){ return new Promise((ok,ng)=>{ const r=new FileReader(); r.onload=()=>ok(r.result); r.onerror=ng; r.readAsArrayBuffer(file); }); }
+
+async function addHtml(files){
+  for(const f of files){
+    if(!/\.html?$/i.test(f.name)) { state.pages.push({file:f.name, rows:[], error:'HTMLファイルではありません'}); continue; }
+    try {
+      const res = parsePage(await readText(f));
+      state.pages.push({ file:f.name, rows:res.rows||[], page:res.page, error:res.error });
+    } catch(e){ state.pages.push({file:f.name, rows:[], error:'読み込みに失敗しました'}); }
+  }
+  render();
+}
+async function setPrev(file){
+  if(!file) return;
+  try { state.prev = parsePrev(await readBuf(file)); state.prevName = file.name; }
+  catch(e){ state.prev = null; document.getElementById('listPrev').innerHTML = `<li><span>${esc(file.name)}</span><span class="bad">Excelを読み込めませんでした</span></li>`; return; }
+  render();
+}
+
+function wireDrop(dropId, inputId, handler){
+  const d = document.getElementById(dropId), inp = document.getElementById(inputId);
+  d.addEventListener('click', ()=> inp.click());
+  d.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); inp.click(); } });
+  d.addEventListener('dragover', e=>{ e.preventDefault(); d.classList.add('over'); });
+  d.addEventListener('dragleave', ()=> d.classList.remove('over'));
+  d.addEventListener('drop', e=>{ e.preventDefault(); d.classList.remove('over'); handler(Array.from(e.dataTransfer.files)); });
+  inp.addEventListener('change', ()=>{ handler(Array.from(inp.files)); inp.value=''; });
+}
+
+/* ===== ブックマークレット本体(KASIKAの画面上で実行される) ===== */
+function kasikaCollect(TOOL){
+  var tbl = document.getElementById('demo-foo-addrow');
+  if(!/kasika\.io$/.test(location.hostname) || !tbl){ alert('KASIKAのメルマガ一覧画面(campaign_list.php)で実行してください。'); return; }
+  var toolOrigin = new URL(TOOL).origin; if(toolOrigin === 'null') toolOrigin = '*';
+  var pages = [], ready = false, done = false, sent = false, w;
+  var box = document.createElement('div');
+  box.style.cssText = 'position:fixed;z-index:99999;top:16px;right:16px;background:#232323;color:#fff;padding:14px 20px;font:14px/1.6 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3)';
+  document.body.appendChild(box);
+  function say(t){ box.textContent = 'KASIKA→Excel: ' + t; }
+  window.addEventListener('message', function(e){
+    if(e.source === w && e.data && e.data.type === 'kasika-ready'){ ready = true; trySend(); }
+  });
+  try { w = window.open(TOOL, 'kasika_excel_tool'); } catch(e){ w = null; }
+  var blocked = !w;
+  function showOpenBtn(){
+    box.textContent = 'KASIKA→Excel: ' + pages.length + 'ページ分を読み取りました。';
+    var b = document.createElement('button');
+    b.textContent = 'ツールを開いて取り込む';
+    b.style.cssText = 'display:block;margin-top:10px;padding:8px 18px;background:#AD8A5C;color:#fff;border:0;font:bold 14px sans-serif;cursor:pointer';
+    b.onclick = function(){
+      w = window.open(TOOL, 'kasika_excel_tool');
+      if(!w){ box.textContent = 'KASIKA→Excel: タブを開けませんでした。ブラウザの設定で kasika.io のポップアップを許可してください。'; return; }
+      b.remove(); say('ツールの起動を待っています…');
+    };
+    box.appendChild(b);
+  }
+  function trySend(){
+    if(!ready || !done || sent) return;
+    sent = true;
+    w.postMessage({ type:'kasika-pages', pages: pages }, toolOrigin);
+    say(pages.length + 'ページ分をツールに送りました。');
+    setTimeout(function(){ box.remove(); }, 4000);
+  }
+  function cur(){ var c = document.getElementById('currentPage'); return c ? c.textContent.trim() : ''; }
+  function key(){ var a = document.querySelector('#demo-foo-addrow tbody a[href*="cid="]'); return (a ? a.getAttribute('href') : '') + '|' + cur(); }
+  function snap(){
+    var t = document.getElementById('demo-foo-addrow').cloneNode(true);
+    t.querySelectorAll('.modal').forEach(function(m){ m.remove(); });
+    return { page: cur(), html: t.outerHTML };
+  }
+  function link(re){
+    return Array.prototype.find.call(document.querySelectorAll('a.jsClickPaging'), function(a){ return re.test(a.textContent); });
+  }
+  function waitChange(k){
+    return new Promise(function(ok, ng){
+      var n = 0, iv = setInterval(function(){
+        n++;
+        if(document.getElementById('demo-foo-addrow') && key() !== k){ clearInterval(iv); setTimeout(ok, 400); }
+        else if(n > 75){ clearInterval(iv); ng(new Error('timeout')); }
+      }, 200);
+    });
+  }
+  (async function(){
+    try {
+      var first = link(/最初/);
+      if(cur() !== '1' && first){ say('1ページ目に戻しています…'); var k0 = key(); first.click(); await waitChange(k0); }
+      for(var i = 0; i < 100; i++){
+        pages.push(snap());
+        say(cur() + 'ページ目を読み取りました…');
+        var nx = link(/次/);
+        if(!nx) break;
+        var k = key(); nx.click(); await waitChange(k);
+      }
+    } catch(err){
+      alert('ページの切り替えを確認できなかったため、' + pages.length + 'ページ分までで送ります。');
+    }
+    done = true;
+    if(blocked && !w) showOpenBtn();
+    else if(ready) trySend(); else say('ツールの起動を待っています…');
+  })();
+}
+
+function setupBookmarklet(){
+  var a = document.getElementById('bmLink');
+  var toolUrl = location.href.split('#')[0].split('?')[0];
+  a.href = 'javascript:' + encodeURIComponent('(' + kasikaCollect.toString() + ')(' + JSON.stringify(toolUrl) + ');void 0');
+  a.addEventListener('click', function(e){ e.preventDefault(); alert('このボタンはクリックではなく、ブックマークバーへドラッグして登録してください。'); });
+}
+setupBookmarklet();
+
+/* ===== KASIKAからの受信 ===== */
+window.addEventListener('message', function(e){
+  if(e.origin !== 'https://kasika.io' || !e.data || e.data.type !== 'kasika-pages') return;
+  state.pages = [];
+  for(const pg of e.data.pages || []){
+    const res = parsePage(String(pg.html || ''));
+    state.pages.push({ file:'KASIKA(自動取得)', rows:res.rows||[], page:res.page || pg.page, error:res.error });
+  }
+  const n = document.getElementById('recvNote');
+  const d = new Date();
+  n.hidden = false;
+  n.textContent = `KASIKAから ${state.pages.length} ページ分を取り込みました(${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')})。前回のExcelがあれば02に入れてから保存してください。`;
+  render();
+});
+if(window.opener){ try { window.opener.postMessage({ type:'kasika-ready' }, '*'); } catch(e){} }
+
+wireDrop('dropHtml','fileHtml', addHtml);
+wireDrop('dropPrev','filePrev', fs => setPrev(fs[0]));
+document.getElementById('btnXlsx').addEventListener('click', saveXlsx);
+document.getElementById('btnClear').addEventListener('click', ()=>{ state.pages=[]; state.prev=null; state.prevName=''; render(); });
+
+if(typeof window !== 'undefined') window.__kasika = { parsePage, parsePrev, merged, buildWorkbook, state, render };
+</script>
+</body>
+</html>
