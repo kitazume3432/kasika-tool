@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>KASIKA メルマガ一覧 Excel化ツール</title>
+<title>KASIKA 配信一覧 Excel化ツール</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
 :root{
@@ -68,8 +68,8 @@ input[type=file]{display:none}
 <body>
 <div class="wrap">
 <header>
-  <h1>KASIKA メルマガ一覧 Excel化ツール</h1>
-  <p>KASIKAのメルマガ一覧(campaign_list.php)から、メルマガ名・URL・配信実績を全ページ分まとめてExcelにします。データはブラウザ内だけで処理されます。</p>
+  <h1>KASIKA 配信一覧 Excel化ツール</h1>
+  <p>KASIKAのメルマガ一覧と一斉配信SMS一覧から、配信名・URL・配信実績を全ページ分まとめてExcelにします。データはブラウザ内だけで処理されます。</p>
 </header>
 
 <section>
@@ -77,7 +77,7 @@ input[type=file]{display:none}
   <div class="bm">
     <p class="hint"><b>はじめに1回だけ:</b>下のボタンをブラウザのブックマークバーへドラッグして登録してください(ブックマークバーが出ていない場合は <b>Ctrl+Shift+B</b>)。</p>
     <a class="bmlink" id="bmLink" href="#">KASIKA→Excel</a>
-    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAのメルマガ一覧画面を開き、登録したブックマーク「KASIKA→Excel」をクリック。全ページを自動で読み取ったら、右上に出る「ツールを開いて取り込む」を押すと、このツールが開いて一覧が入ります。</p>
+    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAにログインした状態で(どの画面でも可)、登録したブックマーク「KASIKA→Excel」をクリック。メルマガとSMSの全ページを自動で読み取ったら、右上に出る「ツールを開いて取り込む」を押すと、このツールが開いて一覧が入ります。</p>
   </div>
   <p class="hint" id="recvNote" hidden></p>
   <details>
@@ -110,7 +110,7 @@ input[type=file]{display:none}
 </section>
 <section>
   <h2><span class="no">04</span>配信実績スプレッドシートへ転記<span class="opt">任意</span></h2>
-  <p class="hint">「配信実績(KASIKA・SMS・LINE)」スプレッドシートに、配信済み・配信予約のメルマガを書き込みます。同じ配信は数字を最新に更新し、新しい配信は行を追加します(新しい順に並び替え)。「予約数」「メモ」列は手入力用なので上書きしません。</p>
+  <p class="hint">「配信実績(KASIKA・SMS・LINE)」スプレッドシートに、配信済み・配信予約のメルマガとSMSを書き込みます。同じ配信は数字を最新に更新し、新しい配信は行を追加します(新しい順に並び替え)。「予約数」「メモ」列は手入力用なので上書きしません。</p>
   <div class="form">
     <label>転記用URL(Apps Script)<input type="url" id="gasUrl" placeholder="https://script.google.com/macros/s/…/exec"></label>
     <label>合言葉<input type="password" id="gasKey" placeholder="Apps Scriptに設定した合言葉"></label>
@@ -130,7 +130,7 @@ const BASE = 'https://kasika.io/';
 const state = { pages: [], prev: null, prevName: '' };
 
 const COLS = [
-  ['isNew','新規'],['status','ステータス'],['name','メルマガ名'],['subject','メール件名'],
+  ['isNew','新規'],['channel','チャネル'],['status','ステータス'],['name','配信名'],['subject','メール件名'],
   ['target','配信ターゲット'],['sendAt','配信(予定)日時'],['updatedAt','最終更新日時'],
   ['delivered','配信数'],['opened','開封数'],['openRate','開封率'],
   ['clicked','クリック数'],['clickRate','クリック率'],['linked','追加紐付け顧客数'],['cv','コンバージョン数'],
@@ -178,7 +178,7 @@ function extractRows(table){
     var url = abs(nameA && nameA.getAttribute('href'));
     if(!url) return;
     out.push({
-      isNew:'', status: txt(td[0]),
+      isNew:'', channel:'KASIKAメール', status: txt(td[0]),
       name: txt(td[1].querySelector('strong')) || txt(nameA),
       subject: subject, target: txt(tA), sendAt: dateIn(td[3]), updatedAt: dateIn(td[4]),
       delivered: numIn(td[5]), opened: numIn(td[6]), openRate: rateIn(td[6]),
@@ -189,17 +189,67 @@ function extractRows(table){
   return out;
 }
 const txt = el => el ? el.textContent.replace(/\s+/g,' ').trim() : '';
+/* 一斉配信SMS一覧(table#demo-foo-addrow)から行データを取り出す。ツールとブックマークレットの両方で使う */
+function extractSmsRows(table){
+  var BASE = 'https://kasika.io/';
+  function abs(href){
+    if(!href || /^javascript/i.test(href)) return '';
+    try { return new URL(href, BASE).href; } catch(e){ return ''; }
+  }
+  function txt(el){ return el ? el.textContent.replace(/\s+/g,' ').trim() : ''; }
+  function numIn(td){
+    var n = td && td.querySelector('.number');
+    if(!n) return null;
+    var v = Number(n.textContent.replace(/[^\d.-]/g,''));
+    return isNaN(v) ? null : v;
+  }
+  function rateIn(td){
+    var s = td && td.querySelector('small');
+    if(!s) return null;
+    var m = s.textContent.match(/([\d.]+)\s*%/);
+    return m ? Math.round(Number(m[1]) * 100) / 10000 : null;
+  }
+  function dateIn(td){
+    if(!td) return '';
+    var c = td.cloneNode(true);
+    c.querySelectorAll('br').forEach(function(b){ b.replaceWith(' '); });
+    return c.textContent.replace(/\s+/g,' ').trim();
+  }
+  var tbody = table.tBodies[0];
+  var rows = tbody ? Array.prototype.slice.call(tbody.rows) : [];
+  var out = [];
+  rows.forEach(function(tr){
+    var td = Array.prototype.filter.call(tr.children, function(c){ return c.tagName === 'TD'; });
+    if(td.length < 9) return;
+    var nameA = td[1].querySelector('a[href*="/mktg-sms/"]') || td[1].querySelector('a');
+    var tA = td[2].querySelector('a');
+    var url = abs(nameA && nameA.getAttribute('href'));
+    if(!url) return;
+    out.push({
+      isNew:'', channel:'SMS', status: txt(td[0]),
+      name: txt(td[1].querySelector('strong')) || txt(nameA),
+      subject: '', target: txt(td[2]), sendAt: dateIn(td[4]), updatedAt: dateIn(td[8]),
+      delivered: numIn(td[6]), opened: null, openRate: null,
+      clicked: numIn(td[7]), clickRate: rateIn(td[7]), linked: null, cv: null,
+      url: url, targetUrl: abs(tA && tA.getAttribute('href')), csvUrl: '', memo:''
+    });
+  });
+  return out;
+}
+function isSmsTable(table){
+  return !!table.querySelector('a[href*="/mktg-sms/detail"]') || /一斉配信SMS名/.test(table.tHead ? table.tHead.textContent : '');
+}
 function cidOf(url){
-  const m = String(url||'').match(/[?&]cid=([0-9a-f]+)/i);
+  const m = String(url||'').match(/[?&]cid=([0-9a-f]+)/i) || String(url||'').match(/\/detail\/([0-9a-f]+)/i);
   return m ? m[1] : String(url||'').trim();
 }
 
 function parsePage(html){
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const table = doc.getElementById('demo-foo-addrow');
-  if(!table) return { error: 'メルマガ一覧の表が見つかりません' };
+  if(!table) return { error: '一覧の表が見つかりません' };
   const cur = doc.querySelector('#currentPage');
-  return { rows: extractRows(table), page: cur ? cur.textContent.trim() : '' };
+  return { rows: isSmsTable(table) ? extractSmsRows(table) : extractRows(table), page: cur ? cur.textContent.trim() : '' };
 }
 
 function parsePrev(buf){
@@ -216,7 +266,7 @@ function parsePrev(buf){
 
 function merged(){
   const map = new Map();
-  for(const p of state.pages) for(const r of p.rows) if(!map.has(cidOf(r.url))) map.set(cidOf(r.url), {...r});
+  for(const p of state.pages) for(const r of p.rows) if(!map.has(cidOf(r.url))) map.set(cidOf(r.url), { channel:'KASIKAメール', ...r });
   const list = Array.from(map.values());
   for(const r of list){
     if(state.prev){
@@ -250,11 +300,12 @@ function render(){
   const btn = document.getElementById('btnXlsx');
   const pv = document.getElementById('preview');
   if(!rows.length){
-    sum.textContent = state.pages.length ? '読み込んだファイルからメルマガが見つかりませんでした。保存したページがメルマガ一覧画面か確認してください。' : 'HTMLを読み込むと、ここに件数が表示されます。';
+    sum.textContent = state.pages.length ? '読み込んだファイルから配信が見つかりませんでした。保存したページがメルマガ一覧かSMS一覧の画面か確認してください。' : 'HTMLを読み込むと、ここに件数が表示されます。';
     btn.disabled = true; pv.hidden = true; return;
   }
   const nNew = rows.filter(r=>r.isNew).length;
-  sum.innerHTML = `合計 <b>${rows.length}</b> 件` + (state.prev ? ` / うち新規 <b>${nNew}</b> 件` : '');
+  const nMail = rows.filter(r=>r.channel==='KASIKAメール').length, nSms = rows.filter(r=>r.channel==='SMS').length;
+  sum.innerHTML = `合計 <b>${rows.length}</b> 件(メルマガ ${nMail}件・SMS ${nSms}件)` + (state.prev ? ` / うち新規 <b>${nNew}</b> 件` : '');
   btn.disabled = false;
   const head = COLS.filter(([k])=> state.prev || k!=='isNew');
   pv.hidden = false;
@@ -289,11 +340,11 @@ function buildWorkbook(rows){
       if(/url$/i.test(k) && r[k]){ cell.l = { Target:r[k] }; cell.s.font = {...font, color:{rgb:'0563C1'}, underline:true}; }
     });
   });
-  const widths = { isNew:6, status:9, name:34, subject:50, target:16, sendAt:16, updatedAt:16, delivered:8, opened:8, openRate:8, clicked:9, clickRate:9, linked:10, cv:10, url:40, targetUrl:40, csvUrl:40, memo:30 };
+  const widths = { channel:12, isNew:6, status:9, name:34, subject:50, target:16, sendAt:16, updatedAt:16, delivered:8, opened:8, openRate:8, clicked:9, clickRate:9, linked:10, cv:10, url:40, targetUrl:40, csvUrl:40, memo:30 };
   ws['!cols'] = COLS.map(([k])=>({ wch: widths[k] || 12 }));
   ws['!autofilter'] = { ref: XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:rows.length, c:COLS.length-1}}) };
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'メルマガ一覧');
+  XLSX.utils.book_append_sheet(wb, ws, '配信一覧');
   return wb;
 }
 
@@ -302,7 +353,7 @@ function saveXlsx(){
   const wb = buildWorkbook(rows);
   const d = new Date();
   const ymd = d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
-  XLSX.writeFile(wb, `KASIKAメルマガ一覧_${ymd}.xlsx`);
+  XLSX.writeFile(wb, `KASIKA配信一覧_${ymd}.xlsx`);
 }
 
 function readText(file){ return new Promise((ok,ng)=>{ const r=new FileReader(); r.onload=()=>ok(r.result); r.onerror=ng; r.readAsText(file,'utf-8'); }); }
@@ -336,41 +387,49 @@ function wireDrop(dropId, inputId, handler){
 }
 
 /* ===== ブックマークレット本体(KASIKAの画面上で実行される) ===== */
-function kasikaCollect(TOOL, extractRows){
-  if(!/kasika\.io$/.test(location.hostname) || !document.getElementById('demo-foo-addrow')){ alert('KASIKAのメルマガ一覧画面(campaign_list.php)で実行してください。'); return; }
+function kasikaCollect(TOOL, extractRows, extractSmsRows){
+  if(!/kasika\.io$/.test(location.hostname)){ alert('KASIKAにログインした画面で実行してください。'); return; }
   var old = document.getElementById('kasika-excel-box'); if(old) old.remove();
   var box = document.createElement('div');
   box.id = 'kasika-excel-box';
   box.style.cssText = 'position:fixed;z-index:99999;top:16px;right:16px;max-width:420px;background:#232323;color:#fff;padding:14px 20px;font:14px/1.6 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3)';
   document.body.appendChild(box);
   function say(t){ box.textContent = 'KASIKA→Excel: ' + t; }
-  var base = location.origin + location.pathname;
-  var pages = [], seen = {}, note = '';
+  var SOURCES = [
+    { label:'メルマガ', channel:'KASIKAメール', path:'/campaign_list.php', fn: extractRows },
+    { label:'SMS', channel:'SMS', path:'/mktg-sms/list', fn: extractSmsRows }
+  ];
+  var pages = [], notes = [], counts = {};
   (async function(){
-    for(var n = 1; n <= 100; n++){
-      say(n + 'ページ目を読み取っています…');
-      var html;
-      try {
-        var res = await fetch(base + '?page=' + n, { credentials:'same-origin' });
-        if(!res.ok) throw new Error('HTTP ' + res.status);
-        html = await res.text();
-      } catch(e){ note = '(' + n + 'ページ目の読み込みに失敗したため、そこまでです)'; break; }
-      var doc = new DOMParser().parseFromString(html, 'text/html');
-      var tbl = doc.getElementById('demo-foo-addrow');
-      if(!tbl){ if(n === 1) note = '(一覧の表が見つかりませんでした。ログイン状態を確認してください)'; break; }
-      var rows = extractRows(tbl);
-      var fresh = rows.filter(function(r){ return !seen[r.url]; });
-      if(!fresh.length) break;
-      fresh.forEach(function(r){ seen[r.url] = 1; });
-      var c = doc.getElementById('currentPage');
-      pages.push({ page: c ? c.textContent.trim() : String(n), rows: fresh });
-      var hasNext = Array.prototype.some.call(doc.querySelectorAll('.pagination a'), function(a){ return /次/.test(a.textContent) && !(a.parentNode && /disabled/.test(a.parentNode.className)); });
-      if(!hasNext) break;
+    for(var si = 0; si < SOURCES.length; si++){
+      var src = SOURCES[si], seen = {}, total = 0;
+      for(var n = 1; n <= 100; n++){
+        say(src.label + ' ' + n + 'ページ目を読み取っています…');
+        var html;
+        try {
+          var res = await fetch(location.origin + src.path + '?page=' + n, { credentials:'same-origin' });
+          if(!res.ok) throw new Error('HTTP ' + res.status);
+          html = await res.text();
+        } catch(e){ notes.push(src.label + 'の' + n + 'ページ目を読み込めませんでした'); break; }
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var tbl = doc.getElementById('demo-foo-addrow');
+        if(!tbl){ if(n === 1) notes.push(src.label + 'の一覧が見つかりませんでした(ログイン状態を確認してください)'); break; }
+        var rows = src.fn(tbl);
+        var fresh = rows.filter(function(r){ return !seen[r.url]; });
+        if(!fresh.length) break;
+        fresh.forEach(function(r){ seen[r.url] = 1; });
+        total += fresh.length;
+        var c = doc.getElementById('currentPage');
+        pages.push({ channel: src.channel, page: src.label + ' ' + (c ? c.textContent.trim() : String(n)), rows: fresh });
+        var hasNext = Array.prototype.some.call(doc.querySelectorAll('.pagination a'), function(a){ return /次/.test(a.textContent) && !(a.parentNode && /disabled/.test(a.parentNode.className)); });
+        if(!hasNext) break;
+      }
+      counts[src.label] = total;
     }
-    var total = pages.reduce(function(s, p){ return s + p.rows.length; }, 0);
-    if(!total){ say('メルマガを読み取れませんでした' + note); return; }
-    var payload = encodeURIComponent(JSON.stringify({ v:3, at: Date.now(), pages: pages }));
-    box.textContent = 'KASIKA→Excel: ' + pages.length + 'ページ・' + total + '件を読み取りました' + note;
+    var all = pages.reduce(function(s, p){ return s + p.rows.length; }, 0);
+    if(!all){ say('配信を読み取れませんでした。' + notes.join(' / ')); return; }
+    var payload = encodeURIComponent(JSON.stringify({ v:4, at: Date.now(), pages: pages }));
+    box.textContent = 'KASIKA→Excel: メルマガ ' + (counts['メルマガ'] || 0) + '件・SMS ' + (counts['SMS'] || 0) + '件を読み取りました' + (notes.length ? '(' + notes.join(' / ') + ')' : '');
     var a = document.createElement('a');
     a.href = TOOL + '#kasika=' + payload;
     a.target = '_blank';
@@ -385,7 +444,7 @@ function kasikaCollect(TOOL, extractRows){
 function setupBookmarklet(){
   var a = document.getElementById('bmLink');
   var toolUrl = location.href.split('#')[0].split('?')[0];
-  a.href = 'javascript:' + encodeURIComponent('(' + kasikaCollect.toString() + ')(' + JSON.stringify(toolUrl) + ',' + extractRows.toString() + ');void 0');
+  a.href = 'javascript:' + encodeURIComponent('(' + kasikaCollect.toString() + ')(' + JSON.stringify(toolUrl) + ',' + extractRows.toString() + ',' + extractSmsRows.toString() + ');void 0');
   a.addEventListener('click', function(e){ e.preventDefault(); alert('このボタンはクリックではなく、ブックマークバーへドラッグして登録してください。'); });
 }
 setupBookmarklet();
@@ -402,7 +461,8 @@ function receiveFromHash(){
   if(!data || !Array.isArray(data.pages)){ n.textContent = 'KASIKAからのデータを読み込めませんでした。もう一度ブックマークから実行してください。'; return; }
   state.pages = data.pages.map(pg => ({ file:'KASIKA(自動取得)', rows: Array.isArray(pg.rows) ? pg.rows : [], page: pg.page || '' }));
   const d = new Date(data.at || Date.now());
-  n.textContent = `KASIKAから ${state.pages.length} ページ分を取り込みました(${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')} 時点)。前回のExcelがあれば02に入れてから保存してください。`;
+  const cm = state.pages.filter(p=>p.rows[0] && p.rows[0].channel==='SMS').reduce((t,p)=>t+p.rows.length,0), ca = state.pages.reduce((t,p)=>t+p.rows.length,0);
+  n.textContent = `KASIKAから メルマガ ${ca-cm}件・SMS ${cm}件 を取り込みました(${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')} 時点)。前回のExcelがあれば02に入れてから保存してください。`;
   render();
   const sv = loadSync();
   if(sv.auto && sv.url) runSync(false);
@@ -423,7 +483,7 @@ function updateSyncButtons(){
 }
 function syncRows(){
   return merged().filter(r => r.status === '配信済み' || r.status === '配信予約').map(r => ({
-    channel: 'KASIKAメール', id: cidOf(r.url), sendAt: r.sendAt, name: r.name, subject: r.subject, target: r.target, status: r.status,
+    channel: r.channel || 'KASIKAメール', id: cidOf(r.url), sendAt: r.sendAt, name: r.name, subject: r.subject, target: r.target, status: r.status,
     delivered: r.delivered, opened: r.opened, openRate: r.openRate, clicked: r.clicked, clickRate: r.clickRate, cv: r.cv, url: r.url
   }));
 }
