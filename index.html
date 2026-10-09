@@ -68,7 +68,7 @@ input[type=file]{display:none}
   <div class="bm">
     <p class="hint"><b>はじめに1回だけ:</b>下のボタンをブラウザのブックマークバーへドラッグして登録してください(ブックマークバーが出ていない場合は <b>Ctrl+Shift+B</b>)。</p>
     <a class="bmlink" id="bmLink" href="#">KASIKA→Excel</a>
-    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAのメルマガ一覧画面を開き、登録したブックマーク「KASIKA→Excel」をクリック。全ページを自動でめくって読み取ったら、右上に出る「ツールを開いて取り込む」を押すと、このツールが開いて一覧が入ります。</p>
+    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAのメルマガ一覧画面を開き、登録したブックマーク「KASIKA→Excel」をクリック。全ページを自動で読み取ったら、右上に出る「ツールを開いて取り込む」を押すと、このツールが開いて一覧が入ります。</p>
   </div>
   <p class="hint" id="recvNote" hidden></p>
   <details>
@@ -312,46 +312,39 @@ function wireDrop(dropId, inputId, handler){
 
 /* ===== ブックマークレット本体(KASIKAの画面上で実行される) ===== */
 function kasikaCollect(TOOL, extractRows){
-  var tbl = document.getElementById('demo-foo-addrow');
-  if(!/kasika\.io$/.test(location.hostname) || !tbl){ alert('KASIKAのメルマガ一覧画面(campaign_list.php)で実行してください。'); return; }
+  if(!/kasika\.io$/.test(location.hostname) || !document.getElementById('demo-foo-addrow')){ alert('KASIKAのメルマガ一覧画面(campaign_list.php)で実行してください。'); return; }
   var old = document.getElementById('kasika-excel-box'); if(old) old.remove();
   var box = document.createElement('div');
   box.id = 'kasika-excel-box';
   box.style.cssText = 'position:fixed;z-index:99999;top:16px;right:16px;max-width:420px;background:#232323;color:#fff;padding:14px 20px;font:14px/1.6 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3)';
   document.body.appendChild(box);
   function say(t){ box.textContent = 'KASIKA→Excel: ' + t; }
-  function cur(){ var c = document.getElementById('currentPage'); return c ? c.textContent.trim() : ''; }
-  function key(){ var a = document.querySelector('#demo-foo-addrow tbody a[href*="cid="]'); return (a ? a.getAttribute('href') : '') + '|' + cur(); }
-  function link(re){
-    return Array.prototype.find.call(document.querySelectorAll('a.jsClickPaging'), function(a){ return re.test(a.textContent); });
-  }
-  function waitChange(k){
-    return new Promise(function(ok, ng){
-      var n = 0, iv = setInterval(function(){
-        n++;
-        if(document.getElementById('demo-foo-addrow') && key() !== k){ clearInterval(iv); setTimeout(ok, 400); }
-        else if(n > 75){ clearInterval(iv); ng(new Error('timeout')); }
-      }, 200);
-    });
-  }
-  var pages = [];
+  var base = location.origin + location.pathname;
+  var pages = [], seen = {}, note = '';
   (async function(){
-    var note = '';
-    try {
-      var first = link(/最初/);
-      if(cur() !== '1' && first){ say('1ページ目に戻しています…'); var k0 = key(); first.click(); await waitChange(k0); }
-      for(var i = 0; i < 100; i++){
-        pages.push({ page: cur(), rows: extractRows(document.getElementById('demo-foo-addrow')) });
-        say(cur() + 'ページ目を読み取りました…');
-        var nx = link(/次/);
-        if(!nx) break;
-        var k = key(); nx.click(); await waitChange(k);
-      }
-    } catch(err){
-      note = '(ページの切り替えを確認できなかったため、' + pages.length + 'ページ目までです)';
+    for(var n = 1; n <= 100; n++){
+      say(n + 'ページ目を読み取っています…');
+      var html;
+      try {
+        var res = await fetch(base + '?page=' + n, { credentials:'same-origin' });
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        html = await res.text();
+      } catch(e){ note = '(' + n + 'ページ目の読み込みに失敗したため、そこまでです)'; break; }
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var tbl = doc.getElementById('demo-foo-addrow');
+      if(!tbl){ if(n === 1) note = '(一覧の表が見つかりませんでした。ログイン状態を確認してください)'; break; }
+      var rows = extractRows(tbl);
+      var fresh = rows.filter(function(r){ return !seen[r.url]; });
+      if(!fresh.length) break;
+      fresh.forEach(function(r){ seen[r.url] = 1; });
+      var c = doc.getElementById('currentPage');
+      pages.push({ page: c ? c.textContent.trim() : String(n), rows: fresh });
+      var hasNext = Array.prototype.some.call(doc.querySelectorAll('.pagination a'), function(a){ return /次/.test(a.textContent) && !(a.parentNode && /disabled/.test(a.parentNode.className)); });
+      if(!hasNext) break;
     }
     var total = pages.reduce(function(s, p){ return s + p.rows.length; }, 0);
-    var payload = encodeURIComponent(JSON.stringify({ v:2, at: Date.now(), pages: pages }));
+    if(!total){ say('メルマガを読み取れませんでした' + note); return; }
+    var payload = encodeURIComponent(JSON.stringify({ v:3, at: Date.now(), pages: pages }));
     box.textContent = 'KASIKA→Excel: ' + pages.length + 'ページ・' + total + '件を読み取りました' + note;
     var a = document.createElement('a');
     a.href = TOOL + '#kasika=' + payload;

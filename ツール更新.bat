@@ -1,39 +1,89 @@
-﻿@echo off
-chcp 65001 >nul
+@echo off
 setlocal
-cd /d "%~dp0"
+pushd "%~dp0"
+if errorlevel 1 goto :nofolder
 
-echo ============================================
-echo  工程管理ツール 更新スクリプト
-echo ============================================
+set "LOGFILE=%cd%\update_log.txt"
+echo ============================================== >> "%LOGFILE%"
+echo Update started: %date% %time% >> "%LOGFILE%"
+
+echo ===============================================
+echo   kasika-tool update - pushing to GitHub
+echo   Folder: %cd%
+echo ===============================================
 echo.
 
-git config --global --add safe.directory "*" >nul 2>&1
+git pull --quiet
 
-echo [1/3] 変更をステージしています...
+set "DOWNLOADS=%USERPROFILE%\Downloads"
+set "NEWEST="
+for /f "delims=" %%F in ('dir /b /o-d /a-d "%DOWNLOADS%\kasika-mailmag-list*.html" 2^>nul') do (
+  if not defined NEWEST set "NEWEST=%%F"
+)
+if not defined NEWEST goto :nofile
+
+echo Newest tool file in Downloads:
+echo   %NEWEST%
+for %%A in ("%DOWNLOADS%\%NEWEST%") do echo   Downloaded: %%~tA
+echo.
+set "CONFIRM="
+set /p CONFIRM="Overwrite index.html with this file? (Y / N): "
+if /i not "%CONFIRM%"=="Y" goto :skipcopy
+
+copy /Y "%DOWNLOADS%\%NEWEST%" "index.html" >nul
+if errorlevel 1 goto :copyfailed
+echo index.html updated.
+echo Overwrote index.html with: %NEWEST% >> "%LOGFILE%"
+goto :commit
+
+:nofile
+echo No "kasika-mailmag-list*.html" found in Downloads.
+echo Uploading the files already in this folder.
+echo No tool file in Downloads. >> "%LOGFILE%"
+goto :commit
+
+:skipcopy
+echo Skipped overwrite.
+echo Skipped overwrite. >> "%LOGFILE%"
+goto :commit
+
+:copyfailed
+echo [ERROR] Could not copy the file to index.html.
+echo [ERROR] copy failed >> "%LOGFILE%"
+goto :end
+
+:commit
+echo.
 git add -A
-
-echo [2/3] コミットしています...
-git commit -m "ツール更新 %date% %time%"
-if errorlevel 1 (
-    echo コミットする変更がありませんでした。
-    echo %date% %time% 変更なし >> update_log.txt
-    goto :end
-)
-
-echo [3/3] GitHubへpushしています...
-git push origin main
-if errorlevel 1 (
-    echo エラーが発生しました。内容を確認してください。
-    echo %date% %time% 更新失敗 >> update_log.txt
-    goto :end
-)
-
+git commit -m "update %date% %time%" >> "%LOGFILE%" 2>&1
+if errorlevel 1 goto :nochange
+echo Uploading to GitHub...
+git push origin main >> "%LOGFILE%" 2>&1
+if errorlevel 1 goto :pushfailed
 echo.
-echo 更新が完了しました！
-echo https://kitazume3432.github.io/kotei-kanri-tool/
-echo %date% %time% 更新成功 >> update_log.txt
+echo Update completed successfully.
+echo It will be live in 1-2 minutes:
+echo   https://kitazume3432.github.io/kasika-tool/
+echo PUSH SUCCESS >> "%LOGFILE%"
+goto :end
+
+:nochange
+echo No changes to upload.
+echo No changes. >> "%LOGFILE%"
+goto :end
+
+:pushfailed
+echo [ERROR] Push failed. Check network / GitHub login. Details: update_log.txt
+echo PUSH FAILED >> "%LOGFILE%"
+goto :end
+
+:nofolder
+echo [ERROR] Could not open folder: %~dp0
+pause
+exit /b 1
 
 :end
 echo.
 pause
+popd
+endlocal
