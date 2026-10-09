@@ -663,7 +663,11 @@ const PLAN_TEMPLATES = [
   { m:3,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
   { m:5,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
   { m:7,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
-  { m:9,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' }
+  { m:9,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:4,  name:'マルシェ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:4,  name:'マルシェ', target:'SMS見込み（ショートメールで案内）', time:'21:05', keySuffix:'(SMS)' },
+  { m:9,  name:'マルシェ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:9,  name:'マルシェ', target:'SMS見込み（ショートメールで案内）', time:'21:05', keySuffix:'(SMS)' }
 ];
 // モデルハウスの案内(ソトウチ・レノ・リラクラス)はSMSでも送る
 PLAN_TEMPLATES.filter(t => /ソトウチ|レノ|リラクラス/.test(t.name) && !/SMS/.test(t.target)).forEach(t =>
