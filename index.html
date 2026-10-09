@@ -272,8 +272,9 @@ async function syncSheet(opts){
   const gradeOf = r => (an.byKey[r.channel+'|'+r.id] || {}).grade;
   const legacy = read.sheets.map(s => s.name).filter(n => /^\d{4}年$/.test(n) || n === '配信実績');
   const planOK = (read.version || 0) >= 4;
+  const planFull = (read.version || 0) >= 5;
   const plans = planOK ? parsePlans(read.sheets) : [], lk = linkPlans(plans, mg.all);
-  const planInfo = { total: plans.length, linked: lk.links.size, fresh: lk.fresh.map(x => ({ plan: x.p.name || x.p.subject, actual: x.r.name, sendAt: x.r.sendAt })), hasSheet: read.sheets.some(s => s.name === PLAN_SHEET), supported: planOK };
+  const planInfo = { total: plans.length, linked: lk.links.size, fresh: lk.fresh.map(x => ({ plan: x.p.name || x.p.subject, actual: x.r.name, sendAt: x.r.sendAt })), hasSheet: read.sheets.some(s => s.name === PLAN_SHEET), supported: planOK, full: planFull };
   const res = { ok:true, dryRun: !!opts.dryRun, time: t, years: years.slice().sort((a,b)=>b-a), updated: mg.updated, added: mg.added, unchanged: mg.unchanged,
     good: mg.all.filter(r => inYears(r) && gradeOf(r) === '◎ 良い').length, bad: mg.all.filter(r => inYears(r) && gradeOf(r) === '△ 要改善').length, legacy, plan: planInfo };
   if(opts.dryRun) return res;
@@ -297,6 +298,7 @@ function syncResultHtml(res){
   const t = res.time;
   let h = `<span class="ok">${res.dryRun ? '確認結果(まだ書き込んでいません)' : '転記しました'}</span> ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}<br>`;
   h += `対象の年:${res.years.join('・')}年 / 数字を更新:${res.updated.length}件 / 追加:${res.added.length}件 / 変更なし:${res.unchanged}件<br>評価:◎ 良い ${res.good}件 / △ 要改善 ${res.bad}件`;
+  if(res.plan.supported && !res.plan.full) h += '<br><span class="err">チャネル・対象のプルダウンを使うには、Apps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください。</span>';
   if(!res.plan.supported) h += '<br><span class="err">「配信予定」タブを使うには、スプレッドシートのApps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください(実績の転記は通常どおり行っています)。</span>';
   else h += `<br>配信予定:${res.plan.total}件(実績とひも付け ${res.plan.linked}件${res.plan.fresh.length ? '、今回新たに ' + res.plan.fresh.length + '件' : ''})${res.plan.hasSheet ? '' : ' ※「配信予定」タブを作成' + (res.dryRun ? 'します' : 'しました')}`;
   if(res.plan.fresh.length) h += '<h3>予定と実績のひも付け</h3><ul>' + res.plan.fresh.map(f => `<li>予定「${esc(f.plan)}」→ ${esc(f.sendAt)} ${esc(f.actual)}</li>`).join('') + '</ul>';
@@ -621,11 +623,16 @@ function sheetOrder(allYears){
 
 /* ===== 配信予定(スタッフが入力する予定と、実績のひも付け・事前チェック) ===== */
 const PLAN_SHEET = '配信予定';
-const PLAN_COLS = ['planDate','planTime','channel','name','subject','target','purpose','owner','memo','state','check','delivered','openRate','clickRate','grade','linkId'];
-const PLAN_MANUAL = ['planDate','planTime','channel','name','subject','target','purpose','owner','memo'];
-const PLAN_LABEL = { planDate:'予定日', planTime:'時刻', channel:'チャネル', name:'配信名(案)', subject:'件名(案)', target:'対象', purpose:'目的', owner:'担当', memo:'メモ',
+const PLAN_COLS = ['eventDate','name','planDate','planTime','channel','target','memo','state','check','delivered','openRate','clickRate','grade','linkId'];
+const PLAN_MANUAL = ['eventDate','name','planDate','planTime','channel','target','memo'];
+const PLAN_LABEL = { eventDate:'開催日', name:'イベント名(配信名)', planDate:'配信日(予定日)', planTime:'時刻', channel:'チャネル', target:'対象', memo:'メモ',
   state:'状態(自動)', check:'事前チェック(自動)', delivered:'送信数(実績)', openRate:'開封率(実績)', clickRate:'クリック率(実績)', grade:'評価(実績)', linkId:'KASIKA ID' };
-const PLAN_WIDTH = { planDate:110, planTime:60, channel:70, name:220, subject:260, target:110, purpose:130, owner:80, memo:200, state:130, check:420, delivered:70, openRate:75, clickRate:80, grade:80, linkId:120 };
+// 以前の見出し名(読み込み時だけ使う)
+const PLAN_OLD_LABEL = { '予定日':'planDate', '配信名(案)':'name', '件名(案)':'oldSubject', '目的':'oldPurpose', '担当':'oldOwner' };
+const PLAN_WIDTH = { eventDate:110, name:260, planDate:120, planTime:60, channel:70, target:210, memo:220, state:130, check:440, delivered:70, openRate:75, clickRate:80, grade:80, linkId:120 };
+const PLAN_CH_OPTIONS = ['メール','SMS','LINE'];
+const PLAN_TARGET_OPTIONS = ['新規（見込み顧客）','全員（見込み顧客、OB顧客）','OB（OB顧客）','SMS見込み（ショートメールで案内）'];
+const PLAN_BLANK_ROWS = 150;   // 入力用の空行(日付の曜日表示・プルダウンがすぐ使えるように)
 function normCh_(s){ s = String(s || '').normalize('NFKC'); if(/sms/i.test(s)) return 'SMS'; if(/line|ライン/i.test(s)) return 'LINE'; if(/メール|kasika|mail/i.test(s)) return 'KASIKAメール'; return ''; }
 function parsePlanDate_(s){
   s = String(s || '').normalize('NFKC');
@@ -648,13 +655,15 @@ function simText_(a, b){
 function parsePlans(sheets){
   const sh = sheets.find(s => s.name === PLAN_SHEET);
   if(!sh || !sh.values || sh.values.length < 2) return [];
-  const lab = {}; Object.keys(PLAN_LABEL).forEach(k => lab[PLAN_LABEL[k]] = k);
+  const lab = Object.assign({}, PLAN_OLD_LABEL); Object.keys(PLAN_LABEL).forEach(k => lab[PLAN_LABEL[k]] = k);
   const idx = {}; sh.values[0].forEach((h,i) => { const k = lab[String(h).trim()]; if(k) idx[k] = i; });
   const out = [];
   for(let r = 1; r < sh.values.length; r++){
     const row = sh.values[r], g = k => idx[k] === undefined ? '' : String(row[idx[k]] ?? '').trim();
     const p = {}; PLAN_MANUAL.forEach(k => p[k] = g(k));
     p.linkId = g('linkId');
+    const olds = [['件名','oldSubject'],['目的','oldPurpose'],['担当','oldOwner']].map(([l,k]) => g(k) ? `${l}:${g(k)}` : '').filter(Boolean);
+    if(olds.length) p.memo = [p.memo, olds.join(' / ')].filter(Boolean).join(' / ');   // 削除した列の内容はメモへ移す
     if(!PLAN_MANUAL.some(k => p[k]) && !p.linkId) continue;
     p.date = parsePlanDate_(p.planDate); p.time = parsePlanTime_(p.planTime); p.ch = normCh_(p.channel);
     out.push(p);
@@ -674,7 +683,7 @@ function linkPlans(plans, all){
       const d = toDate_(r.sendAt); if(!d) return;
       const days = Math.abs(Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - p.date) / 86400000));
       if(days > 3) return;
-      const sim = Math.max(simText_(p.name, r.name), simText_(p.subject, r.subject), simText_(p.name, r.subject));
+      const sim = Math.max(simText_(p.name, r.name), simText_(p.name, r.subject));
       if(!(sim >= 0.35 || (days === 0 && sim >= 0.2))) return;
       pairs.push({ p, r, score: sim * 3 - days * 0.3 + (p.time && p.time === String(r.sendAt).slice(11,16) ? 0.5 : 0) });
     });
@@ -699,18 +708,15 @@ function planCheck(p, an, all, plans, linked){
       if(+bw !== wd && s.wds[wd] && s.wds[bw][key] - s.wds[wd][key] >= (key === 'open' ? 0.02 : 0.005)) lines.push(`・曜日:${W[bw]}曜の方が反応が良い傾向(平均${lab} ${pct(s.wds[bw][key])} / ${W[wd]}曜 ${pct(s.wds[wd][key])})`);
     }
   } else lines.push(`・${ch}の過去データがまだ少ないため、時刻・曜日の提案は保留`);
-  if(ch !== 'SMS'){
-    const subj = String(p.subject || '').normalize('NFKC');
-    if(!subj) lines.push('・件名(案)が未入力です');
-    else {
-      const sl = [];
-      if(subj.length > 35) sl.push(`${subj.length}文字と長め。スマホで見える30文字前後に要点を`);
-      if(!/[【\[]/.test(subj) && s && s.bracket['あり'] && s.bracket['なし'] && s.bracket['あり'].open > s.bracket['なし'].open) sl.push(`冒頭に【完成見学会】などの見出しを(【】付きの平均開封率 ${pct(s.bracket['あり'].open)})`);
-      if(!/\d/.test(subj)) sl.push('日付・地名・数字を入れると具体的に');
-      lines.push('・件名:' + (sl.length ? sl.join(' / ') : '長さ・見出し・具体性ともに良好'));
-    }
-  } else lines.push('・SMS:1〜2行目にURLを置き、70文字以内で「何が・いつ・どこで」を');
-  const cat = category_(p.name || p.subject);
+  const ev = parsePlanDate_(/^\s*(\d{4}\/)?\d{1,2}\/\d{1,2}/.test(p.eventDate) ? p.eventDate : '');
+  if(ev && p.date){
+    const days = Math.round((ev - p.date) / 86400000);
+    if(days < 0) lines.push('・告知:配信日が開催日より後になっています');
+    else if(days < 15) lines.push(`・告知:開催日の${days}日前の配信。15日を切ると予約が減りやすいので、20日〜1か月前の告知も検討を`);
+    else lines.push(`・告知:開催日の${days}日前の配信(余裕あり)`);
+  }
+  if(ch === 'SMS') lines.push('・SMS:1〜2行目にURLを置き、70文字以内で「何が・いつ・どこで」を');
+  const cat = category_(p.name);
   if(s && cat !== 'その他' && s.cats[cat]) lines.push(`・同じ種類(${cat})の過去平均:` + (ch === 'SMS' ? '' : `開封率 ${pct(s.cats[cat].open)} / `) + `クリック率 ${pct(s.cats[cat].click)}`);
   const prev = all.filter(r => r.channel === ch && r.status === '配信済み' && category_(r.name) === cat && cat !== 'その他' && (!p.date || toDate_(r.sendAt) < p.date))
     .sort((a,b) => String(b.sendAt).localeCompare(String(a.sendAt)))[0];
@@ -730,6 +736,8 @@ function buildPlanSheet(plans, lk, an, all){
     const r = lk.links.get(p);
     const v = {};
     PLAN_MANUAL.forEach(k => v[k] = p[k]);
+    const evOnly = /^\s*(\d{4}\/)?\d{1,2}\/\d{1,2}(\(.\))?\s*$/.test(p.eventDate) ? parsePlanDate_(p.eventDate) : null;
+    if(evOnly) v.eventDate = `${evOnly.getFullYear()}/${('0'+(evOnly.getMonth()+1)).slice(-2)}/${('0'+evOnly.getDate()).slice(-2)}`;
     if(p.date) v.planDate = `${p.date.getFullYear()}/${('0'+(p.date.getMonth()+1)).slice(-2)}/${('0'+p.date.getDate()).slice(-2)}`;
     if(p.time) v.planTime = p.time;
     v.channel = p.ch ? CH_TAB[p.ch] : p.channel;
@@ -750,6 +758,7 @@ function buildPlanSheet(plans, lk, an, all){
   const done = rows.filter(x => x.done).sort((a,b) => (b.p.date ? b.p.date.getTime() : 0) - (a.p.date ? a.p.date.getTime() : 0));
   const sorted = open.concat(done);
   const values = [PLAN_COLS.map(k => PLAN_LABEL[k])].concat(sorted.map(x => PLAN_COLS.map(k => x.v[k] ?? '')));
+  for(let i = 0; i < PLAN_BLANK_ROWS; i++) values.push(PLAN_COLS.map(() => ''));
   const styles = Object.assign({}, STYLES, { stDone:{ bg:'#E6E6E6', color:'#555555' }, stResv:{ bg:'#DDEBF7' }, stWarn:{ bg:'#FBE3DF', bold:true }, doneRow:{ color:'#777777' } });
   const cellStyles = [];
   PLAN_COLS.forEach((k,c) => cellStyles.push([0, c, PLAN_MANUAL.includes(k) ? 'manualHead' : 'head']));
@@ -759,10 +768,11 @@ function buildPlanSheet(plans, lk, an, all){
     if(st === '配信済み') cellStyles.push([i+1, sc, 'stDone']); else if(st === '配信予約') cellStyles.push([i+1, sc, 'stResv']); else if(/要確認/.test(st)) cellStyles.push([i+1, sc, 'stWarn']);
     if(/^◎/.test(x.v.grade)) cellStyles.push([i+1, gc, 'goodMark']); if(/^△/.test(x.v.grade)) cellStyles.push([i+1, gc, 'badMark']);
   });
-  const nf = {}; nf[PLAN_COLS.indexOf('planDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('planTime')] = 'hh:mm';
+  const nf = {}; nf[PLAN_COLS.indexOf('planDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('eventDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('planTime')] = 'hh:mm';
   nf[PLAN_COLS.indexOf('openRate')] = '0.00%'; nf[PLAN_COLS.indexOf('clickRate')] = '0.00%';
   return { name: PLAN_SHEET, values, styles, rowStyles: [null].concat(sorted.map(x => x.done ? 'doneRow' : null)), cellStyles, numberFormats: nf,
-    wrapCols: [PLAN_COLS.indexOf('check')], widths: PLAN_COLS.map(k => PLAN_WIDTH[k]), frozenRows: 1 };
+    wrapCols: [PLAN_COLS.indexOf('check')], widths: PLAN_COLS.map(k => PLAN_WIDTH[k]), frozenRows: 1,
+    validations: [{ col: PLAN_COLS.indexOf('channel'), values: PLAN_CH_OPTIONS }, { col: PLAN_COLS.indexOf('target'), values: PLAN_TARGET_OPTIONS }] };
 }
 </script>
 <script>
