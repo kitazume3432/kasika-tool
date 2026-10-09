@@ -68,7 +68,7 @@ input[type=file]{display:none}
   <div class="bm">
     <p class="hint"><b>はじめに1回だけ:</b>下のボタンをブラウザのブックマークバーへドラッグして登録してください(ブックマークバーが出ていない場合は <b>Ctrl+Shift+B</b>)。</p>
     <a class="bmlink" id="bmLink" href="#">KASIKA→Excel</a>
-    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAのメルマガ一覧画面を開き、登録したブックマーク「KASIKA→Excel」をクリック。全ページを自動でめくって読み取り、このツールが別タブで開いて一覧が入ります。</p>
+    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAのメルマガ一覧画面を開き、登録したブックマーク「KASIKA→Excel」をクリック。全ページを自動でめくって読み取ったら、右上に出る「ツールを開いて取り込む」を押すと、このツールが開いて一覧が入ります。</p>
   </div>
   <p class="hint" id="recvNote" hidden></p>
   <details>
@@ -113,29 +113,58 @@ const COLS = [
   ['url','メルマガURL'],['targetUrl','配信ターゲットURL'],['csvUrl','配信結果CSV URL'],['memo','メモ']
 ];
 
-function abs(href){
-  if(!href || href.startsWith('javascript')) return '';
-  try { return new URL(href, BASE).href; } catch(e){ return ''; }
+/* 一覧表(table#demo-foo-addrow)から行データを取り出す。ツールとブックマークレットの両方で使う */
+function extractRows(table){
+  var BASE = 'https://kasika.io/';
+  function abs(href){
+    if(!href || /^javascript/i.test(href)) return '';
+    try { return new URL(href, BASE).href; } catch(e){ return ''; }
+  }
+  function txt(el){ return el ? el.textContent.replace(/\s+/g,' ').trim() : ''; }
+  function numIn(td){
+    var n = td && td.querySelector('.number');
+    if(!n) return null;
+    var v = Number(n.textContent.replace(/[^\d.-]/g,''));
+    return isNaN(v) ? null : v;
+  }
+  function rateIn(td){
+    var s = td && td.querySelector('small');
+    if(!s) return null;
+    var m = s.textContent.match(/([\d.]+)\s*%/);
+    return m ? Math.round(Number(m[1]) * 100) / 10000 : null;
+  }
+  function dateIn(td){
+    if(!td) return '';
+    var c = td.cloneNode(true);
+    c.querySelectorAll('br').forEach(function(b){ b.replaceWith(' '); });
+    return c.textContent.replace(/\s+/g,' ').trim();
+  }
+  var tbody = table.tBodies[0];
+  var rows = tbody ? Array.prototype.slice.call(tbody.rows) : [];
+  var out = [];
+  rows.forEach(function(tr){
+    var td = Array.prototype.filter.call(tr.children, function(c){ return c.tagName === 'TD'; });
+    if(td.length < 10) return;
+    var nameA = td[1].querySelector('a[href*="campaign_edit"]') || td[1].querySelector('a[href*="campaign_detail"]') || td[1].querySelector('a');
+    var smalls = td[1].querySelectorAll('small');
+    var subject = '';
+    smalls.forEach(function(sm, i){ if(/件名/.test(sm.textContent) && smalls[i+1]) subject = txt(smalls[i+1]); });
+    var tA = td[2].querySelector('a[href*="campaign_target_edit"]');
+    var csvA = td[5].querySelector('a[href*="csv"]');
+    var url = abs(nameA && nameA.getAttribute('href'));
+    if(!url) return;
+    out.push({
+      isNew:'', status: txt(td[0]),
+      name: txt(td[1].querySelector('strong')) || txt(nameA),
+      subject: subject, target: txt(tA), sendAt: dateIn(td[3]), updatedAt: dateIn(td[4]),
+      delivered: numIn(td[5]), opened: numIn(td[6]), openRate: rateIn(td[6]),
+      clicked: numIn(td[7]), clickRate: rateIn(td[7]), linked: numIn(td[8]), cv: numIn(td[9]),
+      url: url, targetUrl: abs(tA && tA.getAttribute('href')), csvUrl: abs(csvA && csvA.getAttribute('href')), memo:''
+    });
+  });
+  return out;
 }
 const txt = el => el ? el.textContent.replace(/\s+/g,' ').trim() : '';
-function numIn(td){
-  const n = td && td.querySelector('.number');
-  if(!n) return null;
-  const v = Number(n.textContent.replace(/[^\d.-]/g,''));
-  return isNaN(v) ? null : v;
-}
-function rateIn(td){
-  const s = td && td.querySelector('small');
-  if(!s) return null;
-  const m = s.textContent.match(/([\d.]+)\s*%/);
-  return m ? Math.round(Number(m[1]) * 100) / 10000 : null;
-}
-function dateIn(td){
-  if(!td) return '';
-  const c = td.cloneNode(true);
-  c.querySelectorAll('br').forEach(b=> b.replaceWith(' '));
-  return c.textContent.replace(/\s+/g,' ').trim();
-}
 function cidOf(url){
   const m = String(url||'').match(/[?&]cid=([0-9a-f]+)/i);
   return m ? m[1] : String(url||'').trim();
@@ -145,31 +174,8 @@ function parsePage(html){
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const table = doc.getElementById('demo-foo-addrow');
   if(!table) return { error: 'メルマガ一覧の表が見つかりません' };
-  const tbody = table.tBodies[0];
-  const rows = tbody ? Array.from(tbody.rows) : [];
-  const out = [];
-  for(const tr of rows){
-    const td = Array.from(tr.cells);
-    if(td.length < 10) continue;
-    const nameA = td[1].querySelector('a[href*="campaign_edit"]') || td[1].querySelector('a');
-    const smalls = td[1].querySelectorAll('small');
-    let subject = '';
-    smalls.forEach((s,i)=>{ if(/件名/.test(s.textContent) && smalls[i+1]) subject = txt(smalls[i+1]); });
-    const tA = td[2].querySelector('a[href*="campaign_target_edit"]');
-    const csvA = td[5].querySelector('a[href*="csv"]');
-    const url = abs(nameA && nameA.getAttribute('href'));
-    if(!url) continue;
-    out.push({
-      isNew:'', status: txt(td[0]),
-      name: txt(td[1].querySelector('strong')) || txt(nameA),
-      subject, target: txt(tA), sendAt: dateIn(td[3]), updatedAt: dateIn(td[4]),
-      delivered: numIn(td[5]), opened: numIn(td[6]), openRate: rateIn(td[6]),
-      clicked: numIn(td[7]), clickRate: rateIn(td[7]), linked: numIn(td[8]), cv: numIn(td[9]),
-      url, targetUrl: abs(tA && tA.getAttribute('href')), csvUrl: abs(csvA && csvA.getAttribute('href')), memo:''
-    });
-  }
-  const page = txt(doc.querySelector('#currentPage'));
-  return { rows: out, page };
+  const cur = doc.querySelector('#currentPage');
+  return { rows: extractRows(table), page: cur ? cur.textContent.trim() : '' };
 }
 
 function parsePrev(buf){
@@ -305,46 +311,17 @@ function wireDrop(dropId, inputId, handler){
 }
 
 /* ===== ブックマークレット本体(KASIKAの画面上で実行される) ===== */
-function kasikaCollect(TOOL){
+function kasikaCollect(TOOL, extractRows){
   var tbl = document.getElementById('demo-foo-addrow');
   if(!/kasika\.io$/.test(location.hostname) || !tbl){ alert('KASIKAのメルマガ一覧画面(campaign_list.php)で実行してください。'); return; }
-  var toolOrigin = new URL(TOOL).origin; if(toolOrigin === 'null') toolOrigin = '*';
-  var pages = [], ready = false, done = false, sent = false, w;
+  var old = document.getElementById('kasika-excel-box'); if(old) old.remove();
   var box = document.createElement('div');
-  box.style.cssText = 'position:fixed;z-index:99999;top:16px;right:16px;background:#232323;color:#fff;padding:14px 20px;font:14px/1.6 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3)';
+  box.id = 'kasika-excel-box';
+  box.style.cssText = 'position:fixed;z-index:99999;top:16px;right:16px;max-width:420px;background:#232323;color:#fff;padding:14px 20px;font:14px/1.6 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3)';
   document.body.appendChild(box);
   function say(t){ box.textContent = 'KASIKA→Excel: ' + t; }
-  window.addEventListener('message', function(e){
-    if(e.source === w && e.data && e.data.type === 'kasika-ready'){ ready = true; trySend(); }
-  });
-  try { w = window.open(TOOL, 'kasika_excel_tool'); } catch(e){ w = null; }
-  var blocked = !w;
-  function showOpenBtn(){
-    box.textContent = 'KASIKA→Excel: ' + pages.length + 'ページ分を読み取りました。';
-    var b = document.createElement('button');
-    b.textContent = 'ツールを開いて取り込む';
-    b.style.cssText = 'display:block;margin-top:10px;padding:8px 18px;background:#AD8A5C;color:#fff;border:0;font:bold 14px sans-serif;cursor:pointer';
-    b.onclick = function(){
-      w = window.open(TOOL, 'kasika_excel_tool');
-      if(!w){ box.textContent = 'KASIKA→Excel: タブを開けませんでした。ブラウザの設定で kasika.io のポップアップを許可してください。'; return; }
-      b.remove(); say('ツールの起動を待っています…');
-    };
-    box.appendChild(b);
-  }
-  function trySend(){
-    if(!ready || !done || sent) return;
-    sent = true;
-    w.postMessage({ type:'kasika-pages', pages: pages }, toolOrigin);
-    say(pages.length + 'ページ分をツールに送りました。');
-    setTimeout(function(){ box.remove(); }, 4000);
-  }
   function cur(){ var c = document.getElementById('currentPage'); return c ? c.textContent.trim() : ''; }
   function key(){ var a = document.querySelector('#demo-foo-addrow tbody a[href*="cid="]'); return (a ? a.getAttribute('href') : '') + '|' + cur(); }
-  function snap(){
-    var t = document.getElementById('demo-foo-addrow').cloneNode(true);
-    t.querySelectorAll('.modal').forEach(function(m){ m.remove(); });
-    return { page: cur(), html: t.outerHTML };
-  }
   function link(re){
     return Array.prototype.find.call(document.querySelectorAll('a.jsClickPaging'), function(a){ return re.test(a.textContent); });
   }
@@ -357,49 +334,61 @@ function kasikaCollect(TOOL){
       }, 200);
     });
   }
+  var pages = [];
   (async function(){
+    var note = '';
     try {
       var first = link(/最初/);
       if(cur() !== '1' && first){ say('1ページ目に戻しています…'); var k0 = key(); first.click(); await waitChange(k0); }
       for(var i = 0; i < 100; i++){
-        pages.push(snap());
+        pages.push({ page: cur(), rows: extractRows(document.getElementById('demo-foo-addrow')) });
         say(cur() + 'ページ目を読み取りました…');
         var nx = link(/次/);
         if(!nx) break;
         var k = key(); nx.click(); await waitChange(k);
       }
     } catch(err){
-      alert('ページの切り替えを確認できなかったため、' + pages.length + 'ページ分までで送ります。');
+      note = '(ページの切り替えを確認できなかったため、' + pages.length + 'ページ目までです)';
     }
-    done = true;
-    if(blocked && !w) showOpenBtn();
-    else if(ready) trySend(); else say('ツールの起動を待っています…');
+    var total = pages.reduce(function(s, p){ return s + p.rows.length; }, 0);
+    var payload = encodeURIComponent(JSON.stringify({ v:2, at: Date.now(), pages: pages }));
+    box.textContent = 'KASIKA→Excel: ' + pages.length + 'ページ・' + total + '件を読み取りました' + note;
+    var a = document.createElement('a');
+    a.href = TOOL + '#kasika=' + payload;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = 'ツールを開いて取り込む';
+    a.style.cssText = 'display:block;margin-top:10px;padding:8px 18px;background:#AD8A5C;color:#fff;text-decoration:none;font-weight:bold;text-align:center';
+    a.onclick = function(){ setTimeout(function(){ box.remove(); }, 1500); };
+    box.appendChild(a);
   })();
 }
 
 function setupBookmarklet(){
   var a = document.getElementById('bmLink');
   var toolUrl = location.href.split('#')[0].split('?')[0];
-  a.href = 'javascript:' + encodeURIComponent('(' + kasikaCollect.toString() + ')(' + JSON.stringify(toolUrl) + ');void 0');
+  a.href = 'javascript:' + encodeURIComponent('(' + kasikaCollect.toString() + ')(' + JSON.stringify(toolUrl) + ',' + extractRows.toString() + ');void 0');
   a.addEventListener('click', function(e){ e.preventDefault(); alert('このボタンはクリックではなく、ブックマークバーへドラッグして登録してください。'); });
 }
 setupBookmarklet();
 
-/* ===== KASIKAからの受信 ===== */
-window.addEventListener('message', function(e){
-  if(e.origin !== 'https://kasika.io' || !e.data || e.data.type !== 'kasika-pages') return;
-  state.pages = [];
-  for(const pg of e.data.pages || []){
-    const res = parsePage(String(pg.html || ''));
-    state.pages.push({ file:'KASIKA(自動取得)', rows:res.rows||[], page:res.page || pg.page, error:res.error });
-  }
+/* ===== KASIKAからの受け取り(URLの#kasika=…) ===== */
+function receiveFromHash(){
+  const h = location.hash;
+  if(!h.startsWith('#kasika=')) return;
+  let data;
+  try { data = JSON.parse(decodeURIComponent(h.slice(8))); } catch(e){ data = null; }
+  history.replaceState(null, '', location.pathname + location.search);
   const n = document.getElementById('recvNote');
-  const d = new Date();
   n.hidden = false;
-  n.textContent = `KASIKAから ${state.pages.length} ページ分を取り込みました(${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')})。前回のExcelがあれば02に入れてから保存してください。`;
+  if(!data || !Array.isArray(data.pages)){ n.textContent = 'KASIKAからのデータを読み込めませんでした。もう一度ブックマークから実行してください。'; return; }
+  state.pages = data.pages.map(pg => ({ file:'KASIKA(自動取得)', rows: Array.isArray(pg.rows) ? pg.rows : [], page: pg.page || '' }));
+  const d = new Date(data.at || Date.now());
+  n.textContent = `KASIKAから ${state.pages.length} ページ分を取り込みました(${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')} 時点)。前回のExcelがあれば02に入れてから保存してください。`;
   render();
-});
-if(window.opener){ try { window.opener.postMessage({ type:'kasika-ready' }, '*'); } catch(e){} }
+}
+receiveFromHash();
+window.addEventListener('hashchange', receiveFromHash);
 
 wireDrop('dropHtml','fileHtml', addHtml);
 wireDrop('dropPrev','filePrev', fs => setPrev(fs[0]));
