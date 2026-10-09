@@ -27,6 +27,15 @@ header p{margin:4px 0 0;color:var(--muted);font-size:13px}
 details{margin-top:6px;font-size:14px}
 summary{cursor:pointer;color:var(--wood-dark)}
 #recvNote{color:var(--charcoal);background:#EFE6D6;padding:8px 12px}
+.form{display:grid;gap:10px;max-width:640px}
+.form label{display:flex;flex-direction:column;font-size:13px;color:var(--muted);gap:4px}
+.form label.chk{flex-direction:row;align-items:center;gap:8px;color:var(--charcoal);font-size:14px}
+.form input[type=url],.form input[type=password]{font:inherit;padding:8px 10px;border:1px solid var(--line);background:#fff;color:var(--charcoal)}
+.sync{margin-top:14px;font-size:13px;background:#FBF7F0;border:1px solid var(--line);padding:12px 16px}
+.sync h3{font-size:14px;margin:10px 0 4px}
+.sync ul{margin:0;padding-left:18px}
+.sync .err{color:var(--err);font-weight:700}
+.sync .ok{color:var(--wood-dark);font-weight:700}
 section{background:var(--paper);border:1px solid var(--line);padding:22px 24px;margin-bottom:20px}
 section h2{display:flex;align-items:baseline;gap:12px;font-size:17px;margin:0 0 12px}
 section h2 .no{color:var(--wood);font-size:22px;font-weight:700}
@@ -99,6 +108,21 @@ input[type=file]{display:none}
   </div>
   <div class="tbl" id="preview" hidden></div>
 </section>
+<section>
+  <h2><span class="no">04</span>配信実績スプレッドシートへ転記<span class="opt">任意</span></h2>
+  <p class="hint">「配信実績(KASIKA・SMS・LINE)」スプレッドシートに、配信済み・配信予約のメルマガを書き込みます。同じ配信は数字を最新に更新し、新しい配信は行を追加します(新しい順に並び替え)。「予約数」「メモ」列は手入力用なので上書きしません。</p>
+  <div class="form">
+    <label>転記用URL(Apps Script)<input type="url" id="gasUrl" placeholder="https://script.google.com/macros/s/…/exec"></label>
+    <label>合言葉<input type="password" id="gasKey" placeholder="Apps Scriptに設定した合言葉"></label>
+    <label class="chk"><input type="checkbox" id="gasAuto"> KASIKAから取り込んだら自動で転記する</label>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button id="btnSyncDry" class="sub" disabled>確認だけする(書き込まない)</button>
+    <button id="btnSync" disabled>スプレッドシートに転記</button>
+  </div>
+  <div id="syncResult" class="sync" hidden></div>
+</section>
+
 </div>
 
 <script>
@@ -213,6 +237,7 @@ function fmt(k, v){
 }
 
 function render(){
+  setTimeout(()=>{ try{ updateSyncButtons(); }catch(e){} },0);
   const listEl = document.getElementById('listHtml');
   listEl.innerHTML = state.pages.map(p =>
     `<li><span>${esc(p.file)}</span><span class="${p.error?'bad':''}">${p.error ? esc(p.error) : (p.page?p.page+'ページ目 ':'')+p.rows.length+'件'}</span></li>`
@@ -379,7 +404,65 @@ function receiveFromHash(){
   const d = new Date(data.at || Date.now());
   n.textContent = `KASIKAから ${state.pages.length} ページ分を取り込みました(${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')} 時点)。前回のExcelがあれば02に入れてから保存してください。`;
   render();
+  const sv = loadSync();
+  if(sv.auto && sv.url) runSync(false);
 }
+
+/* ===== スプレッドシート転記 ===== */
+const SYNC_KEY = 'kasika-sheet-sync';
+function loadSync(){ try { return JSON.parse(localStorage.getItem(SYNC_KEY) || '{}'); } catch(e){ return {}; } }
+function saveSync(){
+  const v = { url: document.getElementById('gasUrl').value.trim(), key: document.getElementById('gasKey').value, auto: document.getElementById('gasAuto').checked };
+  try { localStorage.setItem(SYNC_KEY, JSON.stringify(v)); } catch(e){}
+  updateSyncButtons();
+}
+function updateSyncButtons(){
+  const ok = !!document.getElementById('gasUrl').value.trim() && merged().length > 0;
+  document.getElementById('btnSync').disabled = !ok;
+  document.getElementById('btnSyncDry').disabled = !ok;
+}
+function syncRows(){
+  return merged().filter(r => r.status === '配信済み' || r.status === '配信予約').map(r => ({
+    channel: 'KASIKAメール', id: cidOf(r.url), sendAt: r.sendAt, name: r.name, subject: r.subject, target: r.target, status: r.status,
+    delivered: r.delivered, opened: r.opened, openRate: r.openRate, clicked: r.clicked, clickRate: r.clickRate, cv: r.cv, url: r.url
+  }));
+}
+async function runSync(dryRun){
+  const box = document.getElementById('syncResult');
+  const url = document.getElementById('gasUrl').value.trim();
+  const key = document.getElementById('gasKey').value;
+  box.hidden = false;
+  if(!url){ box.innerHTML = '<span class="err">転記用URLが未設定です。</span>'; return; }
+  const rows = syncRows();
+  box.innerHTML = (dryRun ? '確認中…' : '転記中…') + `(配信済み ${rows.length}件)`;
+  let res;
+  try {
+    const r = await fetch(url, { method:'POST', body: JSON.stringify({ key, dryRun, rows }) });
+    res = await r.json();
+  } catch(e){
+    box.innerHTML = '<span class="err">スプレッドシートに接続できませんでした。</span>URLと、Apps Scriptのデプロイ設定(アクセスできるユーザー:全員)を確認してください。';
+    return;
+  }
+  if(!res.ok){ box.innerHTML = `<span class="err">エラー:${esc(res.error || '不明')}</span>`; return; }
+  const t = new Date();
+  let h = `<span class="ok">${dryRun ? '確認結果(まだ書き込んでいません)' : '転記しました'}</span> ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}<br>`;
+  h += `数字を更新:${res.updated.length}件 / 追加:${res.added.length}件 / 変更なし:${res.unchanged}件`;
+  if(res.updated.length) h += '<h3>数字を更新する行</h3><ul>' + res.updated.map(u => `<li>${esc(u.name)}<br><small>${esc(u.before)} → ${esc(u.after)}</small></li>`).join('') + '</ul>';
+  if(res.added.length) h += '<h3>追加する行</h3><ul>' + res.added.map(a => `<li>${esc(a.date)} ${esc(a.name)}</li>`).join('') + '</ul>';
+  if(res.skipped.length) h += '<h3>転記しなかったもの</h3><ul>' + res.skipped.map(s => `<li>${esc(s.reason)}${s.name ? ':' + esc(s.date || '') + ' ' + esc(s.name) : ''}${s.count ? '(' + s.count + '件)' : ''}</li>`).join('') + '</ul>';
+  box.innerHTML = h;
+}
+(function initSync(){
+  const v = loadSync();
+  document.getElementById('gasUrl').value = v.url || '';
+  document.getElementById('gasKey').value = v.key || '';
+  document.getElementById('gasAuto').checked = !!v.auto;
+  ['gasUrl','gasKey'].forEach(id => document.getElementById(id).addEventListener('input', saveSync));
+  document.getElementById('gasAuto').addEventListener('change', saveSync);
+  document.getElementById('btnSync').addEventListener('click', () => runSync(false));
+  document.getElementById('btnSyncDry').addEventListener('click', () => runSync(true));
+})();
+
 receiveFromHash();
 window.addEventListener('hashchange', receiveFromHash);
 
