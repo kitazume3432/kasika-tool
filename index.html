@@ -30,7 +30,7 @@ summary{cursor:pointer;color:var(--wood-dark)}
 .form{display:grid;gap:10px;max-width:640px}
 .form label{display:flex;flex-direction:column;font-size:13px;color:var(--muted);gap:4px}
 .form label.chk{flex-direction:row;align-items:center;gap:8px;color:var(--charcoal);font-size:14px}
-.form input[type=url],.form input[type=password]{font:inherit;padding:8px 10px;border:1px solid var(--line);background:#fff;color:var(--charcoal)}
+.form select,.form input[type=url],.form input[type=password]{font:inherit;padding:8px 10px;border:1px solid var(--line);background:#fff;color:var(--charcoal)}
 .sync{margin-top:14px;font-size:13px;background:#FBF7F0;border:1px solid var(--line);padding:12px 16px}
 .sync h3{font-size:14px;margin:10px 0 4px}
 .sync ul{margin:0;padding-left:18px}
@@ -110,10 +110,11 @@ input[type=file]{display:none}
 </section>
 <section>
   <h2><span class="no">04</span>配信実績スプレッドシートへ転記<span class="opt">任意</span></h2>
-  <p class="hint">「配信実績(KASIKA・SMS・LINE)」スプレッドシートに、配信済み・配信予約のメルマガとSMSを書き込みます。同じ配信は数字を最新に更新し、新しい配信は行を追加します(新しい順に並び替え)。「予約数」「メモ」列は手入力用なので上書きしません。</p>
+  <p class="hint">「配信実績(KASIKA・SMS・LINE)」スプレッドシートに、年ごと・チャネルごとのシート(例「2026年_メール」「2026年_SMS」)で書き込み、「2026年_分析」に評価・改善案・参考ポイントと集計をまとめます。同じ配信は数字を最新に更新し、新しい配信は追加します。「予約数」「メモ」列は手入力用なので上書きしません。</p>
   <div class="form">
     <label>転記用URL(Apps Script)<input type="url" id="gasUrl" placeholder="https://script.google.com/macros/s/…/exec"></label>
     <label>合言葉<input type="password" id="gasKey" placeholder="Apps Scriptに設定した合言葉"></label>
+    <label>転記する年<select id="gasYears"><option value="all">すべての年(過去分も含めて整える)</option><option value="this">今年のみ(過去の年のシートは触らない)</option></select></label>
     <label class="chk"><input type="checkbox" id="gasAuto"> KASIKAから取り込んだら自動で転記する</label>
   </div>
   <div class="row" style="margin-top:12px">
@@ -468,48 +469,302 @@ function receiveFromHash(){
   if(sv.auto && sv.url) runSync(false);
 }
 
-/* ===== スプレッドシート転記 ===== */
+/* ===== 配信実績スプレッドシート転記 ===== */
+// スプレッドシート側(Apps Script)は「読む」「書く」だけ。表の形・評価・分析はここで作る。
 const SYNC_KEY = 'kasika-sheet-sync';
+const CH_TAB = { 'KASIKAメール':'メール', 'SMS':'SMS', 'LINE':'LINE' };
+const TAB_CH = { 'メール':'KASIKAメール', 'SMS':'SMS', 'LINE':'LINE' };
+const CH_ORDER = ['KASIKAメール','SMS','LINE'];
+const SHEET_COLS = {
+  'KASIKAメール': ['sendAt','name','subject','target','status','delivered','opened','openRate','clicked','clickRate','cv','grade','rsv','memo','url','id','fetched'],
+  'SMS':          ['sendAt','name','target','status','delivered','clicked','clickRate','grade','rsv','memo','url','id','fetched'],
+  'LINE':         ['sendAt','name','target','status','delivered','opened','openRate','clicked','clickRate','grade','rsv','memo','url','id','fetched']
+};
+const FIELD_LABEL = { sendAt:'配信日時', channel:'チャネル', name:'配信名', subject:'件名', target:'対象', status:'ステータス', delivered:'送信数', opened:'開封数',
+  openRate:'開封率', clicked:'クリック数', clickRate:'クリック率', cv:'コンバージョン', grade:'評価', comment:'分析コメント(改善案・参考)', rsv:'予約数', memo:'メモ', url:'リンク', id:'取得元ID', fetched:'最終取得' };
+const LABEL_FIELD = Object.fromEntries(Object.entries(FIELD_LABEL).map(([k,v]) => [v,k]));
+const FIELD_WIDTH = { sendAt:150, name:240, subject:300, target:110, status:80, delivered:60, opened:60, openRate:65, clicked:70, clickRate:70, cv:90, grade:80, rsv:60, memo:220, url:200, id:120, fetched:120 };
+const STYLES = {
+  head:{ bold:true, color:'#ffffff', bg:'#232323' }, manualHead:{ bold:true, color:'#ffffff', bg:'#AD8A5C' },
+  title:{ bold:true, size:14 }, section:{ bold:true, color:'#AD8A5C', size:12 },
+  good:{ bg:'#E3F1DF' }, bad:{ bg:'#FBE3DF' }, goodMark:{ bg:'#B9DDB0', bold:true }, badMark:{ bg:'#F2B8AE', bold:true }
+};
+
 function loadSync(){ try { return JSON.parse(localStorage.getItem(SYNC_KEY) || '{}'); } catch(e){ return {}; } }
 function saveSync(){
-  const v = { url: document.getElementById('gasUrl').value.trim(), key: document.getElementById('gasKey').value, auto: document.getElementById('gasAuto').checked };
+  const v = { url: document.getElementById('gasUrl').value.trim(), key: document.getElementById('gasKey').value,
+    auto: document.getElementById('gasAuto').checked, years: document.getElementById('gasYears').value };
   try { localStorage.setItem(SYNC_KEY, JSON.stringify(v)); } catch(e){}
   updateSyncButtons();
 }
+var syncing = false;
 function updateSyncButtons(){
+  if(syncing) return;
   const ok = !!document.getElementById('gasUrl').value.trim() && merged().length > 0;
   document.getElementById('btnSync').disabled = !ok;
   document.getElementById('btnSyncDry').disabled = !ok;
 }
-function syncRows(){
+async function gas_(payload){
+  const url = document.getElementById('gasUrl').value.trim();
+  const key = document.getElementById('gasKey').value;
+  const r = await fetch(url, { method:'POST', body: JSON.stringify(Object.assign({ key }, payload)) });
+  return r.json();
+}
+function incomingRows(){
   return merged().filter(r => r.status === '配信済み' || r.status === '配信予約').map(r => ({
-    channel: r.channel || 'KASIKAメール', id: cidOf(r.url), sendAt: r.sendAt, name: r.name, subject: r.subject, target: r.target, status: r.status,
+    channel: r.channel || 'KASIKAメール', id: cidOf(r.url), sendAt: r.sendAt, name: r.name, subject: r.subject || '', target: r.target, status: r.status,
     delivered: r.delivered, opened: r.opened, openRate: r.openRate, clicked: r.clicked, clickRate: r.clickRate, cv: r.cv, url: r.url
   }));
 }
+/* --- シートの表示値 → レコード --- */
+function parseSendAt(s){
+  const m = String(s || '').match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})\D*?(\d{1,2}):(\d{2})/);
+  return m ? `${m[1]}-${('0'+m[2]).slice(-2)}-${('0'+m[3]).slice(-2)} ${('0'+m[4]).slice(-2)}:${m[5]}` : '';
+}
+function parseNum(s){ s = String(s ?? '').replace(/,/g,'').trim(); if(s === '' || s === '-') return null; const n = Number(s.replace('%','')); return isNaN(n) ? null : (/%$/.test(s) ? Math.round(n * 100) / 10000 : n); }
+function sheetRecords(sheets){
+  const recs = [];
+  sheets.forEach(sh => {
+    const v = sh.values || [];
+    if(v.length < 2) return;
+    const m = sh.name.match(/^(\d{4})年(?:_(.+))?$/);
+    if(m && m[2] === '分析') return;
+    const tabCh = m && m[2] ? TAB_CH[m[2]] : null;
+    const idx = {};
+    v[0].forEach((h,i) => { const f = LABEL_FIELD[String(h).trim()]; if(f) idx[f] = i; });
+    if(idx.id === undefined || idx.sendAt === undefined) return;
+    for(let r = 1; r < v.length; r++){
+      const row = v[r], get = f => idx[f] === undefined ? '' : row[idx[f]];
+      const id = String(get('id')).trim(); if(!id) continue;
+      const channel = tabCh || String(get('channel')).trim() || 'KASIKAメール';
+      recs.push({ channel, id, sendAt: parseSendAt(get('sendAt')), name: get('name'), subject: get('subject'), target: get('target'), status: get('status'),
+        delivered: parseNum(get('delivered')), opened: parseNum(get('opened')), openRate: parseNum(get('openRate')), clicked: parseNum(get('clicked')),
+        clickRate: parseNum(get('clickRate')), cv: parseNum(get('cv')), rsv: get('rsv'), memo: get('memo'), url: get('url'), fetched: get('fetched'), _sheet: sh.name });
+    }
+  });
+  return recs;
+}
+/* --- 取り込み分とシートの内容を合わせる --- */
+const CMP = ['sendAt','name','subject','target','status','delivered','opened','openRate','clicked','clickRate','cv','url'];
+function sameVal(a, b){
+  const na = (a === null || a === undefined) ? '' : a, nb = (b === null || b === undefined) ? '' : b;
+  if(typeof na === 'number' || typeof nb === 'number') return Math.abs(Number(na || 0) - Number(nb || 0)) < 0.00006 && String(na === '' ) === String(nb === '');
+  return String(na).trim() === String(nb).trim();
+}
+function mergeRecords(existing, incoming, now){
+  const map = new Map();
+  existing.forEach(r => map.set(r.channel + '|' + r.id, r));
+  const updated = [], added = [];
+  let unchanged = 0;
+  incoming.forEach(r => {
+    const k = r.channel + '|' + r.id, e = map.get(k);
+    const rec = Object.assign({}, r, { rsv: e ? e.rsv : '', memo: e ? e.memo : '', fetched: now });
+    if(!e) added.push(rec);
+    else if(CMP.some(f => !sameVal(e[f], r[f]))) updated.push({ rec, before: e });
+    else unchanged++;
+    map.set(k, rec);
+  });
+  return { all: Array.from(map.values()), updated, added, unchanged };
+}
+/* --- 分析(過去の配信データの傾向から評価と提案を作る) --- */
+const MIN_SENT = 30, GOOD_TH = 1.2, BAD_TH = 0.8, WEEK = '日月火水木金土';
+function median_(a){ if(!a.length) return null; const s = a.slice().sort((x,y)=>x-y), m = Math.floor(s.length/2); return s.length % 2 ? s[m] : (s[m-1]+s[m])/2; }
+function mean_(a){ return a.length ? a.reduce((x,y)=>x+y,0) / a.length : null; }
+function pct(v){ return v === null || v === undefined ? '-' : (v*100).toFixed(1) + '%'; }
+function category_(name){
+  const n = String(name || '').normalize('NFKC');
+  if(/見学会|モデルハウス|ソトウチ|来場/.test(n)) return '見学会・来場案内';
+  if(/すまいるくらぶ/.test(n)) return 'すまいるくらぶ';
+  if(/youtube|ルームツアー|動画/i.test(n)) return 'YouTube・動画';
+  if(/施工例|施工事例|作品|事例/.test(n)) return '施工例紹介';
+  if(/マルシェ|木工|教室|イベント|相談会|フェア|セミナー/.test(n)) return 'イベント';
+  if(/あいさつ|挨拶|休暇|お知らせ|掲載|受賞|認定|出演/.test(n)) return 'お知らせ';
+  return 'その他';
+}
+function toDate_(s){ const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/); return m ? new Date(+m[1], m[2]-1, +m[3], +m[4], +m[5]) : null; }
+function analyze(records){
+  const recs = records.filter(r => toDate_(r.sendAt)).map(r => {
+    const date = toDate_(r.sendAt), subj = String(r.subject || r.name || '').normalize('NFKC');
+    return Object.assign({}, r, { date, f: { hour: date.getHours(), wd: date.getDay(), len: subj.length, bracket: /[【\[]/.test(subj), digit: /\d/.test(subj), cat: category_(r.name) } });
+  });
+  const eligible = recs.filter(r => r.status === '配信済み' && r.delivered >= MIN_SENT && (r.openRate !== null || r.clickRate !== null));
+  const stats = {};
+  const by = {}; eligible.forEach(r => (by[r.channel] = by[r.channel] || []).push(r));
+  Object.keys(by).forEach(ch => {
+    const rs = by[ch];
+    const s = { n: rs.length, medOpen: median_(rs.map(r=>r.openRate).filter(v=>v!==null)), medClick: median_(rs.map(r=>r.clickRate).filter(v=>v!==null)), hours:{}, wds:{}, cats:{}, bracket:{} };
+    const grp = (fn, store) => { const g = {}; rs.forEach(r => (g[fn(r)] = g[fn(r)] || []).push(r));
+      Object.keys(g).forEach(k => store[k] = { n: g[k].length, open: mean_(g[k].map(r=>r.openRate).filter(v=>v!==null)), click: mean_(g[k].map(r=>r.clickRate).filter(v=>v!==null)) }); };
+    grp(r => r.f.hour, s.hours); grp(r => r.f.wd, s.wds); grp(r => r.f.cat, s.cats); grp(r => r.f.bracket ? 'あり' : 'なし', s.bracket);
+    stats[ch] = s;
+  });
+  const best = (store, metric) => { let b = null; Object.keys(store).forEach(k => { const v = store[k]; if(v.n >= 3 && v[metric] !== null && (b === null || v[metric] > store[b][metric])) b = k; }); return b; };
+  const byKey = {};
+  recs.forEach(r => {
+    const key = r.channel + '|' + r.id;
+    if(r.status !== '配信済み'){ byKey[key] = { grade:'', comment:'', score:null }; return; }
+    if(!(r.delivered >= MIN_SENT) || (r.openRate === null && r.clickRate === null)){ byKey[key] = { grade:'対象外', comment:'', score:null }; return; }
+    const s = stats[r.channel];
+    if(!s || s.n < 5){ byKey[key] = { grade:'', comment:'', score:null }; return; }
+    const parts = [];
+    const vsOpen = r.openRate !== null && s.medOpen ? r.openRate / s.medOpen : null;
+    const vsClick = r.clickRate !== null && s.medClick ? r.clickRate / s.medClick : null;
+    if(vsOpen !== null) parts.push([0.4, vsOpen]); if(vsClick !== null) parts.push([0.6, vsClick]);
+    const sc = parts.length ? parts.reduce((a,p)=>a+p[0]*p[1],0) / parts.reduce((a,p)=>a+p[0],0) : null;
+    const grade = sc === null ? '' : sc >= GOOD_TH ? '◎ 良い' : sc <= BAD_TH ? '△ 要改善' : '普通';
+    const head = [];
+    if(vsOpen !== null) head.push(`開封率 ${pct(r.openRate)}(中央値 ${pct(s.medOpen)})`);
+    if(vsClick !== null) head.push(`クリック率 ${pct(r.clickRate)}(中央値 ${pct(s.medClick)})`);
+    const lines = [], cat = s.cats[r.f.cat];
+    const bh = best(s.hours, vsOpen !== null ? 'open' : 'click'), bw = best(s.wds, vsOpen !== null ? 'open' : 'click');
+    if(grade === '△ 要改善'){
+      lines.push('【改善案】');
+      if(vsOpen !== null && vsOpen < 0.95){
+        const cur = s.hours[r.f.hour];
+        if(bh !== null && +bh !== r.f.hour && cur && s.hours[bh].open - cur.open >= 0.02) lines.push(`・配信時刻を${bh}時台に寄せる(${bh}時台の平均開封率 ${pct(s.hours[bh].open)} / 今回の${r.f.hour}時台 ${pct(cur.open)})`);
+        if(bw !== null && +bw !== r.f.wd && s.wds[r.f.wd] && s.wds[bw].open - s.wds[r.f.wd].open >= 0.02) lines.push(`・${WEEK[bw]}曜日の配信を検討(${WEEK[bw]}曜の平均開封率 ${pct(s.wds[bw].open)} / ${WEEK[r.f.wd]}曜 ${pct(s.wds[r.f.wd].open)})`);
+        const b = s.bracket;
+        if(!r.f.bracket && b['あり'] && b['なし'] && b['あり'].n >= 3 && b['あり'].open - b['なし'].open >= 0.02) lines.push(`・件名の冒頭に【完成見学会】などの見出しを付ける(【】付きの平均開封率 ${pct(b['あり'].open)} / なし ${pct(b['なし'].open)})`);
+        if(r.f.len > 35) lines.push(`・件名を短く(今回${r.f.len}文字。スマホで見える30文字前後に要点を)`);
+        if(!r.f.digit) lines.push('・件名に日付・地名・数字(「10/12」「前橋市」「3つの」など)を入れて具体的に');
+      }
+      if(vsClick !== null && vsClick < 0.95){
+        if(cat && r.f.cat !== 'その他' && cat.n >= 3 && cat.click !== null && cat.click > (r.clickRate || 0)) lines.push(`・同じ種類(${r.f.cat})の平均クリック率は ${pct(cat.click)}。反応の良かった回の本文構成を参考に`);
+        if(r.channel === 'SMS') lines.push('・SMSは1〜2行目にURLを置き、70文字以内で「何が・いつ・どこで」を伝える');
+        else lines.push('・リンク(予約ボタン)を本文の最初の画面内に置き、リンク先を1つに絞る');
+        lines.push('・「予約はこちら」より「空き枠を見る」「間取りを見る」など、押した後が想像できる文言に');
+      }
+      if(lines.length === 1) lines.push('・配信対象(ターゲット)の見直し、送る間隔が詰まりすぎていないかを確認');
+      if(lines.length > 5) lines.length = 5;
+    } else if(grade === '◎ 良い'){
+      lines.push('【参考ポイント】');
+      if(vsOpen !== null && vsOpen >= 1.1) lines.push(`・開封率が中央値の${vsOpen.toFixed(1)}倍。件名「${String(r.subject || r.name).slice(0,40)}」の型を次回に流用`);
+      if(vsClick !== null && vsClick >= 1.1) lines.push(`・クリック率が中央値の${vsClick.toFixed(1)}倍。本文の構成・リンクの置き方を次回のひな形に`);
+      if(bh !== null && +bh === r.f.hour) lines.push(`・${r.f.hour}時台は${r.channel}で最も反応が良い時間帯`);
+      if(r.f.bracket) lines.push('・件名冒頭の【】見出しで内容が一目で分かる');
+      if(r.f.digit) lines.push('・件名に日付・数字などの具体的な情報がある');
+      if(cat && r.f.cat !== 'その他' && cat.click !== null && r.clickRate !== null && r.clickRate > cat.click * 1.2) lines.push(`・同じ種類(${r.f.cat})の中でも反応が良い`);
+      if(vsOpen !== null && vsOpen < 0.9) lines.push('※開封率は中央値を下回っているので、件名は改善の余地あり');
+    }
+    byKey[key] = { grade, comment: head.join(' / ') + (lines.length ? '\n' + lines.join('\n') : ''), score: sc };
+  });
+  return { byKey, recs };
+}
+/* --- シートの中身を作る --- */
+function cellVal(f, r, an){
+  if(f === 'grade') return (an.byKey[r.channel + '|' + r.id] || {}).grade || '';
+  if(f === 'sendAt'){ const m = String(r.sendAt).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/); return m ? `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}` : r.sendAt; }
+  const v = r[f];
+  if(f === 'openRate' || f === 'clickRate') return (v === null || v === undefined || v === '') ? '' : Math.round(Number(v) * 10000) / 10000;
+  return v === null || v === undefined ? '' : v;
+}
+function channelSheet(year, ch, rows, an){
+  const cols = SHEET_COLS[ch];
+  const sorted = rows.slice().sort((a,b) => String(b.sendAt).localeCompare(String(a.sendAt)));
+  const values = [cols.map(f => FIELD_LABEL[f])].concat(sorted.map(r => cols.map(f => cellVal(f, r, an))));
+  const cellStyles = [];
+  cols.forEach((f,c) => { if(f === 'rsv' || f === 'memo') cellStyles.push([0, c, 'manualHead']); });
+  const gc = cols.indexOf('grade');
+  sorted.forEach((r,i) => { const g = (an.byKey[r.channel + '|' + r.id] || {}).grade || ''; if(g.indexOf('◎') === 0) cellStyles.push([i+1, gc, 'goodMark']); if(g.indexOf('△') === 0) cellStyles.push([i+1, gc, 'badMark']); });
+  const nf = {};
+  cols.forEach((f,c) => { if(f === 'sendAt') nf[c] = 'yyyy/mm/dd(ddd) hh:mm'; if(f === 'openRate' || f === 'clickRate') nf[c] = '0.00%'; });
+  return { name: `${year}年_${CH_TAB[ch]}`, values, styles: STYLES, rowStyles: ['head'], cellStyles, numberFormats: nf,
+    widths: cols.map(f => FIELD_WIDTH[f] || 90), frozenRows: 1 };
+}
+function reportSheet(year, recs, an){
+  const out = [], row = (t, c) => out.push([t, c]);
+  const ok = recs.filter(r => r.status === '配信済み' && r.delivered >= MIN_SENT);
+  const chs = CH_ORDER.filter(c => recs.some(r => r.channel === c));
+  const avg = (a, k) => { const v = a.map(r => r[k]).filter(x => x !== null && x !== undefined); return v.length ? pct(v.reduce((x,y)=>x+y,0)/v.length) : '-'; };
+  const g = r => an.byKey[r.channel + '|' + r.id] || {};
+  const fmtD = r => { const d = toDate_(r.sendAt); return d ? `${d.getMonth()+1}/${d.getDate()}(${WEEK[d.getDay()]}) ${('0'+d.getHours()).slice(-2)}:${('0'+d.getMinutes()).slice(-2)}` : r.sendAt; };
+  row('title', [`${year}年 配信分析`]);
+  row('', [`評価の基準:チャネルごとの開封率・クリック率の中央値(全期間)と比べ、総合1.2倍以上を「◎ 良い」、0.8倍以下を「△ 要改善」。送信数${MIN_SENT}未満は対象外。`]);
+  row('', []);
+  row('section', ['■ チャネル別サマリー']);
+  row('head', ['チャネル','配信件数','送信数合計','平均開封率','平均クリック率','◎ 良い','△ 要改善']);
+  chs.forEach(c => { const a = ok.filter(r => r.channel === c);
+    row('', [c, a.length, a.reduce((s,r)=>s+(r.delivered||0),0), avg(a,'openRate'), avg(a,'clickRate'), a.filter(r=>g(r).grade==='◎ 良い').length, a.filter(r=>g(r).grade==='△ 要改善').length]); });
+  const block = (title, heads, groups) => { row('', []); row('section', [title]); row('head', heads); groups.forEach(x => row('', x)); };
+  const monthRows = []; for(let m = 1; m <= 12; m++) chs.forEach(c => { const a = ok.filter(r => r.channel === c && toDate_(r.sendAt).getMonth()+1 === m); if(a.length) monthRows.push([m+'月', c, a.length, avg(a,'openRate'), avg(a,'clickRate'), a.reduce((s,r)=>s+(r.delivered||0),0)]); });
+  block('■ 月別', ['月','チャネル','配信件数','平均開封率','平均クリック率','送信数合計'], monthRows);
+  const hourRows = []; chs.forEach(c => { Array.from(new Set(ok.filter(r => r.channel === c).map(r => toDate_(r.sendAt).getHours()))).sort((a,b)=>a-b).forEach(h => { const a = ok.filter(r => r.channel === c && toDate_(r.sendAt).getHours() === h); hourRows.push([h+'時台', c, a.length, avg(a,'openRate'), avg(a,'clickRate')]); }); });
+  block('■ 時間帯別(どの時間に送ると反応が良いか)', ['時間帯','チャネル','配信件数','平均開封率','平均クリック率'], hourRows);
+  const wdRows = []; chs.forEach(c => { for(let w = 0; w < 7; w++){ const a = ok.filter(r => r.channel === c && toDate_(r.sendAt).getDay() === w); if(a.length) wdRows.push([WEEK[w]+'曜', c, a.length, avg(a,'openRate'), avg(a,'clickRate')]); } });
+  block('■ 曜日別', ['曜日','チャネル','配信件数','平均開封率','平均クリック率'], wdRows);
+  const catRows = []; chs.forEach(c => { const cats = {}; ok.filter(r => r.channel === c).forEach(r => (cats[category_(r.name)] = cats[category_(r.name)] || []).push(r)); Object.keys(cats).forEach(k => catRows.push([k, c, cats[k].length, avg(cats[k],'openRate'), avg(cats[k],'clickRate')])); });
+  block('■ 内容の種類別', ['種類','チャネル','配信件数','平均開封率','平均クリック率'], catRows);
+  row('', []);
+  row('section', ['■ 配信ごとの評価とコメント(◎ 良い:参考ポイント / △ 要改善:改善案)']);
+  row('head', ['配信日時','チャネル','配信名','開封率','クリック率','評価','分析コメント']);
+  ok.filter(r => /^[◎△]/.test(g(r).grade || '')).sort((a,b) => String(b.sendAt).localeCompare(String(a.sendAt)))
+    .forEach(r => row(g(r).grade.indexOf('◎') === 0 ? 'good' : 'bad', [fmtD(r), r.channel, r.name, pct(r.openRate), pct(r.clickRate), g(r).grade, g(r).comment]));
+  row('', []);
+  row('', ['※ 自動計算です。改善案は過去の配信データの傾向から出した目安なので、内容や時期の事情もふまえて判断してください。']);
+  const W = 7;
+  return { name: `${year}年_分析`, values: out.map(([,c]) => { const a = c.slice(0,W); while(a.length < W) a.push(''); return a; }),
+    styles: STYLES, rowStyles: out.map(([t]) => t || null), wrapCols: [6], widths: [150,110,260,90,90,90,460], frozenRows: 0 };
+}
+function buildSheets(all, an, years){
+  const sheets = [];
+  years.forEach(y => {
+    const ys = all.filter(r => String(r.sendAt).slice(0,4) === String(y));
+    CH_ORDER.forEach(ch => { const rows = ys.filter(r => r.channel === ch); if(rows.length) sheets.push(channelSheet(y, ch, rows, an)); });
+    sheets.push(reportSheet(y, ys, an));
+  });
+  return sheets;
+}
+function sheetOrder(allYears){
+  const order = [];
+  allYears.slice().sort((a,b)=>b-a).forEach(y => { CH_ORDER.forEach(ch => order.push(`${y}年_${CH_TAB[ch]}`)); order.push(`${y}年_分析`); });
+  return order;
+}
+/* --- 実行 --- */
 async function runSync(dryRun){
+  if(syncing) return;
+  syncing = true;
+  document.getElementById('btnSync').disabled = document.getElementById('btnSyncDry').disabled = true;
+  try { await runSyncInner(dryRun); } finally { syncing = false; updateSyncButtons(); }
+}
+async function runSyncInner(dryRun){
   const box = document.getElementById('syncResult');
-  const url = document.getElementById('gasUrl').value.trim();
-  const key = document.getElementById('gasKey').value;
   box.hidden = false;
-  if(!url){ box.innerHTML = '<span class="err">転記用URLが未設定です。</span>'; return; }
-  const rows = syncRows();
-  box.innerHTML = (dryRun ? '確認中…' : '転記中…') + `(配信済み ${rows.length}件)`;
-  let res;
-  try {
-    const r = await fetch(url, { method:'POST', body: JSON.stringify({ key, dryRun, rows }) });
-    res = await r.json();
-  } catch(e){
-    box.innerHTML = '<span class="err">スプレッドシートに接続できませんでした。</span>URLと、Apps Scriptのデプロイ設定(アクセスできるユーザー:全員)を確認してください。';
-    return;
-  }
-  if(!res.ok){ box.innerHTML = `<span class="err">エラー:${esc(res.error || '不明')}</span>`; return; }
+  if(!document.getElementById('gasUrl').value.trim()){ box.innerHTML = '<span class="err">転記用URLが未設定です。</span>'; return; }
+  const yearsMode = document.getElementById('gasYears').value;
+  let incoming = incomingRows();
+  const thisYear = new Date().getFullYear();
+  if(yearsMode === 'this') incoming = incoming.filter(r => String(r.sendAt).slice(0,4) === String(thisYear));
+  box.innerHTML = 'スプレッドシートを読み込み中…';
+  let read;
+  try { read = await gas_({ action:'read' }); }
+  catch(e){ box.innerHTML = '<span class="err">スプレッドシートに接続できませんでした。</span>URLと、Apps Scriptのデプロイ設定(アクセスできるユーザー:全員)を確認してください。'; return; }
+  if(!read.ok){ box.innerHTML = `<span class="err">エラー:${esc(read.error || '不明')}</span>`; return; }
+  if(!read.sheets){ box.innerHTML = '<span class="err">スプレッドシート側のApps Scriptが古い版です。</span>最新のコードに貼り替えて「新バージョン」でデプロイしてください。'; return; }
   const t = new Date();
+  const now = `${t.getFullYear()}/${('0'+(t.getMonth()+1)).slice(-2)}/${('0'+t.getDate()).slice(-2)} ${('0'+t.getHours()).slice(-2)}:${('0'+t.getMinutes()).slice(-2)}`;
+  const existing = sheetRecords(read.sheets);
+  const mg = mergeRecords(existing, incoming, now);
+  const an = analyze(mg.all);
+  const allYears = Array.from(new Set(mg.all.map(r => +String(r.sendAt).slice(0,4)).filter(Boolean)));
+  const years = yearsMode === 'this' ? [thisYear] : allYears;
+  const good = mg.all.filter(r => years.includes(+String(r.sendAt).slice(0,4)) && (an.byKey[r.channel+'|'+r.id]||{}).grade === '◎ 良い').length;
+  const bad = mg.all.filter(r => years.includes(+String(r.sendAt).slice(0,4)) && (an.byKey[r.channel+'|'+r.id]||{}).grade === '△ 要改善').length;
   let h = `<span class="ok">${dryRun ? '確認結果(まだ書き込んでいません)' : '転記しました'}</span> ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}<br>`;
-  h += `数字を更新:${res.updated.length}件 / 追加:${res.added.length}件 / 変更なし:${res.unchanged}件`;
-  if(res.updated.length) h += '<h3>数字を更新する行</h3><ul>' + res.updated.map(u => `<li>${esc(u.name)}<br><small>${esc(u.before)} → ${esc(u.after)}</small></li>`).join('') + '</ul>';
-  if(res.added.length) h += '<h3>追加する行</h3><ul>' + res.added.map(a => `<li>${esc(a.date)} ${esc(a.name)}</li>`).join('') + '</ul>';
-  if(res.skipped.length) h += '<h3>転記しなかったもの</h3><ul>' + res.skipped.map(s => `<li>${esc(s.reason)}${s.name ? ':' + esc(s.date || '') + ' ' + esc(s.name) : ''}${s.count ? '(' + s.count + '件)' : ''}</li>`).join('') + '</ul>';
+  h += `対象の年:${years.slice().sort((a,b)=>b-a).join('・')}年 / 数字を更新:${mg.updated.length}件 / 追加:${mg.added.length}件 / 変更なし:${mg.unchanged}件<br>評価:◎ 良い ${good}件 / △ 要改善 ${bad}件`;
+  const legacy = read.sheets.map(s => s.name).filter(n => /^\d{4}年$/.test(n) || n === '配信実績');
+  if(legacy.length) h += `<br>以前の形式のシート(${legacy.map(esc).join('・')})は、新しい形式に移して削除${dryRun ? 'します' : 'しました'}。`;
+  if(mg.updated.length) h += '<h3>数字を更新</h3><ul>' + mg.updated.slice(0,30).map(u => `<li>${esc(u.rec.channel)} ${esc(u.rec.name)}<br><small>${[u.before.delivered,u.before.opened,pct(u.before.openRate),u.before.clicked,pct(u.before.clickRate)].map(x=>x??'-').join(' / ')} → ${[u.rec.delivered,u.rec.opened,pct(u.rec.openRate),u.rec.clicked,pct(u.rec.clickRate)].map(x=>x??'-').join(' / ')}</small></li>`).join('') + (mg.updated.length > 30 ? `<li>ほか${mg.updated.length-30}件</li>` : '') + '</ul>';
+  if(mg.added.length) h += '<h3>追加</h3><ul>' + mg.added.slice(0,30).map(a => `<li>${esc(a.channel)} ${esc(a.sendAt)} ${esc(a.name)}</li>`).join('') + (mg.added.length > 30 ? `<li>ほか${mg.added.length-30}件</li>` : '') + '</ul>';
+  if(dryRun){ box.innerHTML = h; return; }
+  box.innerHTML = '書き込み中…(件数が多い初回は1〜3分かかります。このまま待ってください)';
+  const sheets = buildSheets(mg.all, an, years);
+  const deleteSheets = legacy.filter(n => n === '配信実績' ? yearsMode !== 'this' : years.includes(+n.slice(0,4)));
+  const existingNames = read.sheets.map(s => s.name);
+  const order = sheetOrder(Array.from(new Set(allYears.concat(existingNames.map(n => +(n.match(/^(\d{4})年/)||[])[1]).filter(Boolean)))));
+  let res;
+  try { res = await gas_({ action:'write', sheets, deleteSheets, order }); }
+  catch(e){ box.innerHTML = '<span class="err">書き込み中に接続が切れました。</span>少し待ってからスプレッドシートを確認し、必要ならもう一度転記してください。'; return; }
+  if(!res.ok){ box.innerHTML = `<span class="err">エラー:${esc(res.error || '不明')}</span>`; return; }
   box.innerHTML = h;
 }
 (function initSync(){
@@ -517,8 +772,9 @@ async function runSync(dryRun){
   document.getElementById('gasUrl').value = v.url || '';
   document.getElementById('gasKey').value = v.key || '';
   document.getElementById('gasAuto').checked = !!v.auto;
+  document.getElementById('gasYears').value = v.years || 'all';
   ['gasUrl','gasKey'].forEach(id => document.getElementById(id).addEventListener('input', saveSync));
-  document.getElementById('gasAuto').addEventListener('change', saveSync);
+  ['gasAuto','gasYears'].forEach(id => document.getElementById(id).addEventListener('change', saveSync));
   document.getElementById('btnSync').addEventListener('click', () => runSync(false));
   document.getElementById('btnSyncDry').addEventListener('click', () => runSync(true));
 })();
