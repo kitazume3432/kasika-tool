@@ -647,18 +647,23 @@ const PLAN_TEMPLATES = [
   { m:4,  d:25, name:'ＧＷ休暇のお知らせ',        target:'全員（見込み顧客、OB顧客）' },
   { m:8,  d:5,  name:'夏季休暇のお知らせ',        target:'全員（見込み顧客、OB顧客）' },
   { m:12, d:25, name:'年末年始休暇のお知らせ',    target:'全員（見込み顧客、OB顧客）' },
-  { m:12, name:'ソトウチのご案内（冬）',   target:'新規（見込み顧客）' },
-  { m:1,  name:'レノのご案内（冬）',       target:'新規（見込み顧客）' },
-  { m:2,  name:'リラクラスのご案内（冬）', target:'新規（見込み顧客）' },
-  { m:3,  name:'ソトウチのご案内（春）',   target:'新規（見込み顧客）' },
-  { m:4,  name:'レノのご案内（春）',       target:'新規（見込み顧客）' },
-  { m:5,  name:'リラクラスのご案内（春）', target:'新規（見込み顧客）' },
-  { m:6,  name:'ソトウチのご案内（夏）',   target:'新規（見込み顧客）' },
-  { m:7,  name:'レノのご案内（夏）',       target:'新規（見込み顧客）' },
-  { m:8,  name:'リラクラスのご案内（夏）', target:'新規（見込み顧客）' },
-  { m:9,  name:'ソトウチのご案内（秋）',   target:'新規（見込み顧客）' },
-  { m:10, name:'レノのご案内（秋）',       target:'新規（見込み顧客）' },
-  { m:11, name:'リラクラスのご案内（秋）', target:'新規（見込み顧客）' }
+  { m:12, name:'ソトウチのご案内（冬）',   target:'新規（見込み顧客）', time:'21:05' },
+  { m:1,  name:'レノのご案内（冬）',       target:'新規（見込み顧客）', time:'21:05' },
+  { m:2,  name:'リラクラスのご案内（冬）', target:'新規（見込み顧客）', time:'21:05' },
+  { m:3,  name:'ソトウチのご案内（春）',   target:'新規（見込み顧客）', time:'21:05' },
+  { m:4,  name:'レノのご案内（春）',       target:'新規（見込み顧客）', time:'21:05' },
+  { m:5,  name:'リラクラスのご案内（春）', target:'新規（見込み顧客）', time:'21:05' },
+  { m:6,  name:'ソトウチのご案内（夏）',   target:'新規（見込み顧客）', time:'21:05' },
+  { m:7,  name:'レノのご案内（夏）',       target:'新規（見込み顧客）', time:'21:05' },
+  { m:8,  name:'リラクラスのご案内（夏）', target:'新規（見込み顧客）', time:'21:05' },
+  { m:9,  name:'ソトウチのご案内（秋）',   target:'新規（見込み顧客）', time:'21:05' },
+  { m:10, name:'レノのご案内（秋）',       target:'新規（見込み顧客）', time:'21:05' },
+  { m:11, name:'リラクラスのご案内（秋）', target:'新規（見込み顧客）', time:'21:05' },
+  { m:1,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:3,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:5,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:7,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' },
+  { m:9,  name:'すまいるくらぶ', target:'全員（見込み顧客、OB顧客）', time:'21:05' }
 ];
 // モデルハウスの案内(ソトウチ・レノ・リラクラス)はSMSでも送る
 PLAN_TEMPLATES.filter(t => /ソトウチ|レノ|リラクラス/.test(t.name) && !/SMS/.test(t.target)).forEach(t =>
@@ -677,12 +682,17 @@ function ensureTemplates(plans){
         (p.date ? (p.date.getFullYear() === y && p.date.getMonth() + 1 === m) : true));
       if(same){ same.tplKey = key; return; }
       const date = t.d ? new Date(y, m - 1, t.d) : null;
-      const np = { planDate: date ? `${y}/${('0'+m).slice(-2)}/${('0'+t.d).slice(-2)}` : '', name: t.name, eventDate:'', planTime:'', target: t.target, memo:'',
-        linkId:'', tplKey: key, date, time:'', ch: chFromTarget_(t.target) };
+      const np = { planDate: date ? `${y}/${('0'+m).slice(-2)}/${('0'+t.d).slice(-2)}` : '', name: t.name, eventDate:'', planTime: t.time || '', target: t.target, memo:'',
+        linkId:'', tplKey: key, date, time: t.time || '', ch: chFromTarget_(t.target) };
       plans.push(np); added.push(np);
     });
   }
-  plans.forEach(p => { p.month = tplMonth_(p.tplKey); const t = PLAN_TEMPLATES.find(t => p.tplKey && p.tplKey.endsWith(' ' + t.name + (t.keySuffix || ''))); p.fixed = !!(t && t.d); });
+  plans.forEach(p => {
+    p.month = tplMonth_(p.tplKey);
+    const t = PLAN_TEMPLATES.find(t => p.tplKey && p.tplKey.endsWith(' ' + t.name + (t.keySuffix || '')));
+    p.fixed = !!(t && t.d);
+    if(t && t.time && !p.planTime){ p.planTime = t.time; p.time = t.time; }   // 時刻が空なら定例の時刻を入れる
+  });
   return added;
 }
 // チャネルは対象から判断する(SMS見込み→SMS、LINEを含む→LINE、それ以外→メール)
