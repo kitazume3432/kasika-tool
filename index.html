@@ -272,7 +272,7 @@ async function syncSheet(opts){
   const gradeOf = r => (an.byKey[r.channel+'|'+r.id] || {}).grade;
   const legacy = read.sheets.map(s => s.name).filter(n => /^\d{4}年$/.test(n) || n === '配信実績');
   const planOK = (read.version || 0) >= 4;
-  const planFull = (read.version || 0) >= 6;
+  const planFull = (read.version || 0) >= 7;
   const plans = planOK ? parsePlans(read.sheets) : [];
   const tplAdded = planOK ? ensureTemplates(plans) : [];
   const lk = linkPlans(plans, mg.all);
@@ -300,7 +300,7 @@ function syncResultHtml(res){
   const t = res.time;
   let h = `<span class="ok">${res.dryRun ? '確認結果(まだ書き込んでいません)' : '転記しました'}</span> ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}<br>`;
   h += `対象の年:${res.years.join('・')}年 / 数字を更新:${res.updated.length}件 / 追加:${res.added.length}件 / 変更なし:${res.unchanged}件<br>評価:◎ 良い ${res.good}件 / △ 要改善 ${res.bad}件`;
-  if(res.plan.supported && !res.plan.full) h += '<br><span class="err">対象のプルダウン・色分け・中央揃えを使うには、Apps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください。</span>';
+  if(res.plan.supported && !res.plan.full) h += '<br><span class="err">対象のプルダウン・色分け・中央揃え・「中止」の即時灰色表示を使うには、Apps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください。</span>';
   if(!res.plan.supported) h += '<br><span class="err">「配信予定」タブを使うには、スプレッドシートのApps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください(実績の転記は通常どおり行っています)。</span>';
   else h += `<br>配信予定:${res.plan.total}件(実績とひも付け ${res.plan.linked}件${res.plan.fresh.length ? '、今回新たに ' + res.plan.fresh.length + '件' : ''}${res.plan.tplAdded ? '、定例配信を ' + res.plan.tplAdded + '件追加' : ''})${res.plan.hasSheet ? '' : ' ※「配信予定」タブを作成' + (res.dryRun ? 'します' : 'しました')}`;
   if(res.plan.fresh.length) h += '<h3>予定と実績のひも付け</h3><ul>' + res.plan.fresh.map(f => `<li>予定「${esc(f.plan)}」→ ${esc(f.sendAt)} ${esc(f.actual)}</li>`).join('') + '</ul>';
@@ -840,7 +840,9 @@ function buildPlanSheet(plans, lk, an, all){
     validations: [{ col: PLAN_COLS.indexOf('target'), values: PLAN_TARGET_OPTIONS }],
     aligns: { [PLAN_COLS.indexOf('planDate')]:'center', [PLAN_COLS.indexOf('eventDate')]:'center', [PLAN_COLS.indexOf('planTime')]:'center' },
     clipCols: [PLAN_COLS.indexOf('memo')],
-    colorRules: [{ col: PLAN_COLS.indexOf('target'), rules: PLAN_TARGET_COLORS }] };
+    colorRules: [{ col: PLAN_COLS.indexOf('target'), rules: PLAN_TARGET_COLORS }],
+    // メモに「中止」と入力したら、その瞬間に行を灰色にする
+    formulaRules: [{ formula: `=REGEXMATCH($${String.fromCharCode(65 + PLAN_COLS.indexOf('memo'))}2,"中止")`, bg:'#E6E6E6', color:'#888888' }] };
 }
 </script>
 <script>
