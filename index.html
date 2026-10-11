@@ -282,11 +282,11 @@ async function syncSheet(opts){
   if(opts.dryRun) return res;
   say('書き込み中…(件数が多い初回は1〜3分かかります。このまま待ってください)');
   const sheets = buildSheets(mg.all, an, years);
-  if(planOK) sheets.unshift(buildPlanSheet(plans, lk, an, mg.all));
+  if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS)); }
   const deleteSheets = legacy.filter(n => n === '配信実績' ? opts.yearsMode !== 'this' : years.includes(+n.slice(0,4)));
   const order = sheetOrder(Array.from(new Set(allYears.concat(read.sheets.map(s => +(s.name.match(/^(\d{4})年/)||[])[1]).filter(Boolean)))));
   let w;
-  try { w = await call({ action:'write', allow:[PLAN_SHEET], sheets, deleteSheets, order }); }
+  try { w = await call({ action:'write', allow:[PLAN_SHEET, CAL_SHEET], sheets, deleteSheets, order }); }
   catch(e){ return { ok:false, error:'書き込み中に接続が切れました。少し待ってからスプレッドシートを確認し、必要ならもう一度転記してください。' }; }
   if(!w.ok) return { ok:false, error: w.error || '不明なエラー' };
   return res;
@@ -619,7 +619,7 @@ function buildSheets(all, an, years){
   return sheets;
 }
 function sheetOrder(allYears){
-  const order = [PLAN_SHEET];
+  const order = [PLAN_SHEET, CAL_SHEET];
   allYears.slice().sort((a,b)=>b-a).forEach(y => { CH_ORDER.forEach(ch => order.push(`${y}年_${CH_TAB[ch]}`)); order.push(`${y}年_分析`); });
   return order;
 }
@@ -802,6 +802,53 @@ function planCheck(p, an, all, plans, linked){
   }
   return lines.join('\n');
 }
+let LAST_PLAN_ROWS = [];
+/* --- 配信カレンダー(配信予定をカレンダー表示。今月から12か月分) --- */
+const CAL_SHEET = '配信カレンダー';
+function buildCalendarSheet(rows){
+  const W = 7, out = [], rowStyles = [], cellStyles = [];
+  const push = (cells, style) => { const a = cells.slice(0, W); while(a.length < W) a.push(''); out.push(a); rowStyles.push(style || null); return out.length - 1; };
+  const today = new Date(); today.setHours(0,0,0,0);
+  const label = x => {
+    const st = x.v.state, mark = st === '配信済み' ? '✓' : st === '中止' ? '×' : '';
+    return mark + (x.v.name || '(名称未定)') + (x.p.ch === 'SMS' ? '(SMS)' : x.p.ch === 'LINE' ? '(LINE)' : '');
+  };
+  const byDay = {}, undated = {};
+  const ymd = d => `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
+  rows.forEach(x => {
+    const d = parsePlanDate_(x.v.planDate);
+    if(d) (byDay[ymd(d)] = byDay[ymd(d)] || []).push(label(x));
+    else if(x.p.month) (undated[`${x.p.month.y}-${x.p.month.m}`] = undated[`${x.p.month.y}-${x.p.month.m}`] || []).push(label(x));
+    const ev = /^\s*(\d{4}\/)?\d{1,2}\/\d{1,2}(\(.\))?\s*$/.test(x.v.eventDate) ? parsePlanDate_(x.v.eventDate) : null;
+    if(ev && x.v.state !== '中止') (byDay[ymd(ev)] = byDay[ymd(ev)] || []).push('【開催】' + (x.v.name || ''));
+  });
+  push(['配信カレンダー(「配信予定」タブから自動作成。ここは編集しても次の転記で作り直されます)'], 'title');
+  push(['✓=配信済み  ×=中止  (SMS)=SMSで配信  【開催】=イベント開催日  黄色=今日'], null);
+  for(let i = 0; i < 12; i++){
+    const y = today.getFullYear() + Math.floor((today.getMonth() + i) / 12), m = (today.getMonth() + i) % 12;
+    push([], null);
+    push([`■ ${y}年${m+1}月`], 'calMonth');
+    const hr = push(['日','月','火','水','木','金','土'], 'calHead');
+    cellStyles.push([hr, 0, 'calSun'], [hr, 6, 'calSat']);
+    const first = new Date(y, m, 1), last = new Date(y, m + 1, 0).getDate();
+    let week = new Array(7).fill(''), wr = null;
+    const flush = () => { wr = push(week, null); week.forEach((c,j) => { if(c === '') return; const d = new Date(y, m, +String(c).split('\n')[0]);
+      if(d.getTime() === today.getTime()) cellStyles.push([wr, j, 'calToday']); else if(String(c).includes('\n')) cellStyles.push([wr, j, 'calHas']); else if(d < today) cellStyles.push([wr, j, 'calPast']); }); week = new Array(7).fill(''); };
+    for(let day = 1; day <= last; day++){
+      const d = new Date(y, m, day), items = byDay[ymd(d)] || [];
+      week[d.getDay()] = [String(day)].concat(items).join('\n');
+      if(d.getDay() === 6 || day === last) flush();
+    }
+    const u = undated[`${y}-${m+1}`];
+    if(u && u.length) push([`日付未定:${u.join('、')}`], 'calUndated');
+  }
+  const styles = Object.assign({}, STYLES, {
+    calMonth:{ bold:true, size:12, bg:'#232323', color:'#ffffff' }, calHead:{ bold:true, bg:'#EFE6D6', color:'#5A4325' },
+    calSun:{ color:'#C0392B', bold:true }, calSat:{ color:'#1F5FA8', bold:true },
+    calHas:{ bg:'#FBF7F0' }, calToday:{ bg:'#FFF1C9', bold:true }, calPast:{ color:'#AAAAAA' }, calUndated:{ color:'#7A5A2E' }
+  });
+  return { name: CAL_SHEET, values: out, styles, rowStyles, cellStyles, wrapCols: [0,1,2,3,4,5,6], widths: [150,150,150,150,150,150,150], frozenRows: 0 };
+}
 function buildPlanSheet(plans, lk, an, all){
   const today = new Date(); today.setHours(0,0,0,0);
   const rows = plans.map(p => {
@@ -832,6 +879,7 @@ function buildPlanSheet(plans, lk, an, all){
     v.tplKey = p.tplKey || '';
     return { p, v, done: v.state === '配信済み' };
   });
+  LAST_PLAN_ROWS = rows;
   const sortT = p => p.date ? p.date.getTime() : p.month ? new Date(p.month.y, p.month.m - 1, 1).getTime() : 9e15;
   rows.forEach(x => { x.done = x.v.state === '配信済み' || x.v.state === '中止'; });
   const open = rows.filter(x => !x.done).sort((a,b) => sortT(a.p) - sortT(b.p));
