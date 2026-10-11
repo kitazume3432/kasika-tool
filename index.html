@@ -733,6 +733,7 @@ function parsePlans(sheets){
     p.linkId = g('linkId'); p.tplKey = g('tplKey');
     const olds = [['件名','oldSubject'],['目的','oldPurpose'],['担当','oldOwner']].map(([l,k]) => g(k) ? `${l}:${g(k)}` : '').filter(Boolean);
     if(olds.length) p.memo = [p.memo, olds.join(' / ')].filter(Boolean).join(' / ');   // 削除した列の内容はメモへ移す
+    if(/^■/.test(p.planDate) && (!p.name || /^\d+件$/.test(p.name))) continue;   // 月の区切り行
     if(!PLAN_MANUAL.some(k => p[k]) && !p.linkId) continue;
     p.date = parsePlanDate_(p.planDate); p.time = parsePlanTime_(p.planTime); p.ch = chFromTarget_(p.target);
     out.push(p);
@@ -835,21 +836,35 @@ function buildPlanSheet(plans, lk, an, all){
   rows.forEach(x => { x.done = x.v.state === '配信済み' || x.v.state === '中止'; });
   const open = rows.filter(x => !x.done).sort((a,b) => sortT(a.p) - sortT(b.p));
   const done = rows.filter(x => x.done).sort((a,b) => sortT(b.p) - sortT(a.p));
-  const sorted = open.concat(done);
-  const values = [PLAN_COLS.map(k => PLAN_LABEL[k])].concat(sorted.map(x => PLAN_COLS.map(k => x.v[k] ?? '')));
-  for(let i = 0; i < PLAN_BLANK_ROWS; i++) values.push(PLAN_COLS.map(() => ''));
-  const styles = Object.assign({}, STYLES, { stDone:{ bg:'#E6E6E6', color:'#555555' }, stResv:{ bg:'#DDEBF7' }, stWarn:{ bg:'#FBE3DF', bold:true }, doneRow:{ color:'#777777' } });
+  // 月ごとに区切り行を入れる(まだ送っていない予定 → 配信済み・中止 の順)
+  const monthOf = p => { const d = p.date || (p.month ? new Date(p.month.y, p.month.m - 1, 1) : null); return d ? `${d.getFullYear()}年${d.getMonth()+1}月` : '日付未定'; };
+  const items = [];
+  let lastM = null;
+  open.forEach(x => { const m = monthOf(x.p); if(m !== lastM){ items.push({ sep: `■ ${m}`, kind:'month' }); lastM = m; } items.push(x); });
+  if(done.length){
+    items.push({ sep: '■ 配信済み・中止', kind:'doneHead' }); lastM = null;
+    done.forEach(x => { const m = monthOf(x.p); if(m !== lastM){ items.push({ sep: `■ ${m}`, kind:'doneMonth' }); lastM = m; } items.push(x); });
+  }
+  const blank = () => PLAN_COLS.map(() => '');
+  const values = [PLAN_COLS.map(k => PLAN_LABEL[k])].concat(items.map(x => {
+    if(x.sep){ const r = blank(); r[0] = x.sep; const n = items.filter(y => !y.sep && monthOf(y.p) === x.sep.slice(2) && (x.kind === 'month' ? !y.done : y.done)).length; if(x.kind !== 'doneHead') r[1] = `${n}件`; return r; }
+    return PLAN_COLS.map(k => x.v[k] ?? '');
+  }));
+  for(let i = 0; i < PLAN_BLANK_ROWS; i++) values.push(blank());
+  const styles = Object.assign({}, STYLES, { stDone:{ bg:'#E6E6E6', color:'#555555' }, stResv:{ bg:'#DDEBF7' }, stWarn:{ bg:'#FBE3DF', bold:true }, doneRow:{ color:'#777777' },
+    month:{ bold:true, bg:'#EFE6D6', color:'#5A4325', size:11 }, doneHead:{ bold:true, bg:'#5A5A5A', color:'#ffffff', size:11 }, doneMonth:{ bold:true, bg:'#EDEDED', color:'#555555' } });
   const cellStyles = [];
   PLAN_COLS.forEach((k,c) => cellStyles.push([0, c, PLAN_MANUAL.includes(k) ? 'manualHead' : 'head']));
   const sc = PLAN_COLS.indexOf('state'), gc = PLAN_COLS.indexOf('grade');
-  sorted.forEach((x,i) => {
+  items.forEach((x,i) => {
+    if(x.sep) return;
     const st = x.v.state;
     if(st === '配信済み' || st === '中止') cellStyles.push([i+1, sc, 'stDone']); else if(st === '配信予約') cellStyles.push([i+1, sc, 'stResv']); else if(/要確認/.test(st)) cellStyles.push([i+1, sc, 'stWarn']);
     if(/^◎/.test(x.v.grade)) cellStyles.push([i+1, gc, 'goodMark']); if(/^△/.test(x.v.grade)) cellStyles.push([i+1, gc, 'badMark']);
   });
   const nf = {}; nf[PLAN_COLS.indexOf('planDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('eventDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('planTime')] = 'hh:mm';
   nf[PLAN_COLS.indexOf('openRate')] = '0.00%'; nf[PLAN_COLS.indexOf('clickRate')] = '0.00%';
-  return { name: PLAN_SHEET, values, styles, rowStyles: [null].concat(sorted.map(x => x.done ? 'doneRow' : null)), cellStyles, numberFormats: nf,
+  return { name: PLAN_SHEET, values, styles, rowStyles: [null].concat(items.map(x => x.sep ? x.kind : x.done ? 'doneRow' : null)), cellStyles, numberFormats: nf,
     wrapCols: [PLAN_COLS.indexOf('check')], widths: PLAN_COLS.map(k => PLAN_WIDTH[k]), frozenRows: 1,
     validations: [{ col: PLAN_COLS.indexOf('target'), values: PLAN_TARGET_OPTIONS }],
     aligns: { [PLAN_COLS.indexOf('planDate')]:'center', [PLAN_COLS.indexOf('eventDate')]:'center', [PLAN_COLS.indexOf('planTime')]:'center' },
