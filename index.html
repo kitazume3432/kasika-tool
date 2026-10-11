@@ -779,7 +779,7 @@ function planCheck(p, an, all, plans, linked){
       if(+bw !== wd && s.wds[wd] && s.wds[bw][key] - s.wds[wd][key] >= (key === 'open' ? 0.02 : 0.005)) lines.push(`・曜日:${W[bw]}曜の方が反応が良い傾向(平均${lab} ${pct(s.wds[bw][key])} / ${W[wd]}曜 ${pct(s.wds[wd][key])})`);
     }
   } else lines.push(`・${ch}の過去データがまだ少ないため、時刻・曜日の提案は保留`);
-  const ev = parsePlanDate_(/^\s*(\d{4}\/)?\d{1,2}\/\d{1,2}/.test(p.eventDate) ? p.eventDate : '');
+  const ev = eventDays_(p.eventDate)[0] || null;
   if(ev && p.date){
     const days = Math.round((ev - p.date) / 86400000);
     if(days < 0) lines.push('・告知:配信日が開催日より後になっています');
@@ -806,6 +806,16 @@ let LAST_PLAN_ROWS = [];
 /* --- 配信カレンダー(配信予定をカレンダー表示。今月から12か月分) --- */
 const CAL_SHEET = '配信カレンダー';
 const CAL_PAST_MONTHS = 2;   // 今月より前に何か月分表示するか(配信済みの確認用)
+// 開催日の書き方から日付を取り出す(「2026/11/01」「11/7」「11/7・8」「11/7～8」「11/7,8」に対応)
+function eventDays_(s){
+  s = String(s || '').normalize('NFKC').replace(/\(.\)/g, '').trim();
+  let m = s.match(/^(?:(\d{4})\/)?(\d{1,2})\/(\d{1,2})((?:\s*[・,、~〜\-]\s*\d{1,2})*)$/);
+  if(!m) return [];
+  const y = m[1] ? +m[1] : new Date().getFullYear(), mo = +m[2], days = [+m[3]];
+  (m[4].match(/\d{1,2}/g) || []).forEach(d => days.push(+d));
+  if(/[~〜\-]/.test(m[4]) && days.length === 2) for(let d = days[0] + 1; d < days[1]; d++) days.push(d);
+  return Array.from(new Set(days)).filter(d => d >= 1 && d <= 31).map(d => new Date(y, mo - 1, d));
+}
 function buildCalendarSheet(rows, all){
   const W = 7, out = [], rowStyles = [], cellStyles = [];
   const push = (cells, style) => { const a = cells.slice(0, W); while(a.length < W) a.push(''); out.push(a); rowStyles.push(style || null); return out.length - 1; };
@@ -814,6 +824,13 @@ function buildCalendarSheet(rows, all){
   const byDay = {}, undated = {};
   const ymd = d => `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
   const add = (d, text, kind) => (byDay[ymd(d)] = byDay[ymd(d)] || []).push({ text, kind });
+  // 開催日は同じ日に同じ(似た名前の)イベントが重なったら1つにまとめる(メール用とSMS用の予定など)
+  const addEvent = (d, name) => {
+    const list = byDay[ymd(d)] = byDay[ymd(d)] || [];
+    const base = String(name).replace(/[（(](SMS|LINE|メール)[)）]/gi, '');
+    if(list.some(t => t.kind === 'event' && simText_(t.base, base) >= 0.6)) return;
+    list.push({ text: '【開催】' + base, kind: 'event', base });
+  };
   // 実際に送った配信(KASIKAの実績)。テスト送信のような少数配信は除く
   (all || []).forEach(r => {
     if(r.status !== '配信済み' || !(r.delivered >= 10)) return;
@@ -835,15 +852,19 @@ function buildCalendarSheet(rows, all){
     const d = parsePlanDate_(x.v.planDate);
     if(d) add(d, text, kind);
     else if(x.p.month) (undated[`${x.p.month.y}-${x.p.month.m}`] = undated[`${x.p.month.y}-${x.p.month.m}`] || []).push(text);
-    const ev = /^\s*(\d{4}\/)?\d{1,2}\/\d{1,2}(\(.\))?\s*$/.test(x.v.eventDate) ? parsePlanDate_(x.v.eventDate) : null;
-    if(ev && st !== '中止') add(ev, '【開催】' + (x.v.name || ''), 'event');
+    if(st !== '中止') eventDays_(x.v.eventDate).forEach(ev => addEvent(ev, x.v.name || ''));
   });
   // セルの色:配信済み(緑)> 予約済み(青)> 予定(ベージュ)> 開催日のみ(オレンジ)> 中止のみ(灰)。今日は黄色
   const rank = { done:5, resv:4, plan:3, event:2, stop:1 };
   const styleOf = { done:'calDone', resv:'calResv', plan:'calPlan', event:'calEvent', stop:'calStop' };
-  for(let i = -CAL_PAST_MONTHS; i < 12; i++){
+  // 開いたときに今月が一番上に来るよう、今月 → 先の月 → (下に)過去の月 の順に並べる
+  const monthsOrder = [];
+  for(let i = 0; i < 12; i++) monthsOrder.push(i);
+  for(let i = CAL_PAST_MONTHS; i >= 1; i--) monthsOrder.push(-i);
+  monthsOrder.forEach((i, idx) => {
     const base = today.getFullYear() * 12 + today.getMonth() + i, y = Math.floor(base / 12), m = base % 12;
-    if(i > -CAL_PAST_MONTHS) push([], null);
+    if(idx > 0) push([], null);
+    if(i === -CAL_PAST_MONTHS) { push(['■ 以前の配信(振り返り用)'], 'calPastHead'); push([], null); }
     push([`■ ${y}年${m+1}月`], 'calMonth');
     const hr = push(['日','月','火','水','木','金','土'], 'calHead');
     cellStyles.push([hr, 0, 'calSun'], [hr, 6, 'calSat']);
@@ -866,13 +887,14 @@ function buildCalendarSheet(rows, all){
     }
     const u = undated[`${y}-${m+1}`];
     if(u && u.length) push([`日付未定:${u.join('、')}`], 'calUndated');
-  }
+  });
   const styles = Object.assign({}, STYLES, {
     calMonth:{ bold:true, size:12, bg:'#232323', color:'#ffffff' }, calHead:{ bold:true, bg:'#EFE6D6', color:'#5A4325' },
     calSun:{ color:'#C0392B', bold:true }, calSat:{ color:'#1F5FA8', bold:true },
     calDone:{ bg:'#DCEFD6', color:'#2F5A1A' }, calResv:{ bg:'#DDEBF7', color:'#1F4E79' }, calPlan:{ bg:'#FBF1DF', color:'#5A4325' },
     calEvent:{ bg:'#FCE3D2', color:'#7A3410' }, calStop:{ bg:'#EDEDED', color:'#888888' },
-    calToday:{ bg:'#FFF1C9', bold:true }, calPast:{ color:'#AAAAAA' }, calUndated:{ color:'#7A5A2E' }
+    calToday:{ bg:'#FFF1C9', bold:true }, calPast:{ color:'#AAAAAA' }, calUndated:{ color:'#7A5A2E' },
+    calPastHead:{ bold:true, size:12, bg:'#5A5A5A', color:'#ffffff' }
   });
   return { name: CAL_SHEET, values: out, styles, rowStyles, cellStyles, wrapCols: [0,1,2,3,4,5,6], widths: [150,150,150,150,150,150,150], frozenRows: 0 };
 }
