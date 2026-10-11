@@ -822,11 +822,9 @@ function buildCalendarSheet(rows){
     const ev = /^\s*(\d{4}\/)?\d{1,2}\/\d{1,2}(\(.\))?\s*$/.test(x.v.eventDate) ? parsePlanDate_(x.v.eventDate) : null;
     if(ev && x.v.state !== '中止') (byDay[ymd(ev)] = byDay[ymd(ev)] || []).push('【開催】' + (x.v.name || ''));
   });
-  push(['配信カレンダー(「配信予定」タブから自動作成。ここは編集しても次の転記で作り直されます)'], 'title');
-  push(['✓=配信済み  ×=中止  (SMS)=SMSで配信  【開催】=イベント開催日  黄色=今日'], null);
   for(let i = 0; i < 12; i++){
     const y = today.getFullYear() + Math.floor((today.getMonth() + i) / 12), m = (today.getMonth() + i) % 12;
-    push([], null);
+    if(i > 0) push([], null);
     push([`■ ${y}年${m+1}月`], 'calMonth');
     const hr = push(['日','月','火','水','木','金','土'], 'calHead');
     cellStyles.push([hr, 0, 'calSun'], [hr, 6, 'calSat']);
