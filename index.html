@@ -847,12 +847,13 @@ function buildCalendarSheet(rows, all){
   rows.forEach(x => {
     const st = x.v.state;
     if(st === '配信済み') return;
-    const kind = st === '中止' ? 'stop' : st === '配信予約' ? 'resv' : 'plan';
-    const text = (st === '中止' ? '×' : '') + (x.v.name || '(名称未定)') + chMark(x.p.ch);
+    if(st === '中止' || /中止/.test(x.v.memo || x.p.memo || '')) return;   // 中止にした予定はカレンダーに出さない
+    const kind = st === '配信予約' ? 'resv' : 'plan';
+    const text = (x.v.name || '(名称未定)') + chMark(x.p.ch);
     const d = parsePlanDate_(x.v.planDate);
     if(d) add(d, text, kind);
-    else if(x.p.month) (undated[`${x.p.month.y}-${x.p.month.m}`] = undated[`${x.p.month.y}-${x.p.month.m}`] || []).push(text);
-    if(st !== '中止') eventDays_(x.v.eventDate).forEach(ev => addEvent(ev, x.v.name || ''));
+    else if(x.p.month) (undated[`${x.p.month.y}-${x.p.month.m}`] = undated[`${x.p.month.y}-${x.p.month.m}`] || []).push(text);   // 中止したものは日付未定に出さない
+    eventDays_(x.v.eventDate).forEach(ev => addEvent(ev, x.v.name || ''));
   });
   // セルの色:配信済み(緑)> 予約済み(青)> 予定(ベージュ)> 開催日のみ(オレンジ)> 中止のみ(灰)。今日は黄色
   const rank = { done:5, resv:4, plan:3, event:2, stop:1 };
