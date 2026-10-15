@@ -918,10 +918,15 @@ function linkPlans(plans, all){
       if(used[r.id] || (p.ch && p.ch !== r.channel)) return;
       const d = toDate_(r.sendAt); if(!d) return;
       let days;
-      if(p.date){ days = Math.abs(Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - p.date) / 86400000)); if(days > 3) return; }
+      if(p.date){
+        const diff = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - p.date) / 86400000);   // 実績の日付 − 予定日
+        // LINEの日付はURLの登録日で、実際の配信より前になることが多いので、30日前までさかのぼって探す
+        if(r.channel === 'LINE'){ if(diff < -30 || diff > 3) return; days = diff < 0 ? Math.min(3, Math.ceil(-diff / 10)) : diff; }
+        else { days = Math.abs(diff); if(days > 3) return; }
+      }
       else { if(d.getFullYear() !== p.month.y || d.getMonth() + 1 !== p.month.m) return; days = 1; }   // 日付未定の定例:同じ月の配信と照合
       const sim = Math.max(simText_(p.name, r.name), simText_(p.name, r.subject));
-      if(!(sim >= 0.35 || (days === 0 && sim >= 0.2))) return;
+      if(r.channel === 'LINE' ? sim < 0.4 : !(sim >= 0.35 || (days === 0 && sim >= 0.2))) return;
       pairs.push({ p, r, score: sim * 3 - days * 0.3 + (p.time && p.time === String(r.sendAt).slice(11,16) ? 0.5 : 0) });
     });
   });
@@ -998,9 +1003,11 @@ function buildCalendarSheet(rows, all){
     list.push({ text: '【開催】' + base, kind: 'event', base });
   };
   // 実際に送った配信(KASIKAの実績)。テスト送信のような少数配信は除く
+  const planDateOf = {};   // 予定とひも付いた実績は、予定の配信日に表示する(LINEはURLの登録日が配信日と違うため)
+  rows.forEach(x => { if(x.v.linkId){ const d = parsePlanDate_(x.v.planDate); if(d) planDateOf[x.v.linkId] = d; } });
   (all || []).forEach(r => {
     if(r.status !== '配信済み' || !(r.delivered >= 10)) return;
-    const d = toDate_(r.sendAt); if(!d) return;
+    const d = planDateOf[r.id] || toDate_(r.sendAt); if(!d) return;
     add(d, '✓' + r.name + chMark(r.channel), 'done');
   });
   // KASIKAに予約済みで、配信予定にひも付いていないもの
