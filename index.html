@@ -384,40 +384,50 @@ async function lmeDirect(vm, say){
   const probe = (vm.pagination && Number(vm.pagination.last_page) > 1) ? (curPage === 1 ? 2 : 1) : curPage;
   const cap = await lmeCaptureRequest(vm, () => vm.changePage(probe));
   if(!cap || !cap.url) throw new Error('一覧の通信を見つけられませんでした');
-  // 送った値のうち、どれがページ番号・フォルダかを見分ける
+  // 送った値のうち、どれがページ番号・フォルダかを見分ける(ページ番号はURLの ?page= 側にある場合も多い)
   const u = new URL(cap.url, location.href);
   const isGet = String(cap.method).toUpperCase() === 'GET';
   const isJson = !isGet && /^\s*\{/.test(cap.body || '');
-  let params;
-  if(isJson){ params = new URLSearchParams(); try { const o = JSON.parse(cap.body); Object.keys(o).forEach(k => params.set(k, o[k] === null ? '' : String(o[k]))); } catch(e){} }
-  else params = new URLSearchParams(isGet ? u.search : cap.body);
-  const capInfo = `${cap.method} ${u.pathname}${isGet ? u.search : ''} ${isGet ? '' : String(cap.body || '').slice(0, 120)}`;
-  let pageKey = null, folderKey = null;
-  params.forEach((v, k) => { if(!pageKey && /page/i.test(k) && String(v) === String(probe)) pageKey = k; });
-  params.forEach((v, k) => { if(!folderKey && k !== pageKey && /folder|group|category/i.test(k) && String(v) === String(curFolder)) folderKey = k; });
-  if(!pageKey) params.forEach((v, k) => { if(!pageKey && String(v) === String(probe)) pageKey = k; });
-  if(!pageKey || !folderKey){
-    // フォルダの値が送られていない作りの場合は、ページ番号だけ変えて今のフォルダ分を読む(他のフォルダは画面切り替えで)
-    throw new Error(`通信の形式が想定と違いました(${capInfo})`);
-  }
+  const q = new URLSearchParams(u.search);
+  let b = new URLSearchParams();
+  if(isJson){ try { const o = JSON.parse(cap.body); Object.keys(o).forEach(k => b.set(k, o[k] === null ? '' : String(o[k]))); } catch(e){} }
+  else if(!isGet) b = new URLSearchParams(cap.body || '');
+  const capInfo = `${cap.method} ${u.pathname}${u.search} ${String(cap.body || '').slice(0, 120)}`;
+  const findKey = (re, val) => { for(const [where, ps] of [['q', q], ['b', b]]){ for(const [k, v] of ps.entries()){ if(re.test(k) && (val === undefined || String(v) === String(val))) return { where, k }; } } return null; };
+  let pageAt = findKey(/page/i, probe) || findKey(/page/i);
+  const folderAt = findKey(/folder|group|category/i);
+  if(!pageAt) pageAt = { where:'q', k:'page' };          // 一般的な ?page=N 形式とみなす(下で確認する)
+  if(!folderAt) throw new Error(`通信の形式が想定と違いました(${capInfo})`);
   const token = (document.querySelector('meta[name="csrf-token"]') || {}).content;
   const headers = Object.assign({ 'X-Requested-With':'XMLHttpRequest' }, token ? { 'X-CSRF-TOKEN': token } : {}, cap.headers || {});
   if(!isGet && !Object.keys(headers).some(h => /content-type/i.test(h))) headers['Content-Type'] = isJson ? 'application/json' : 'application/x-www-form-urlencoded; charset=UTF-8';
   const get = async (folder, page) => {
-    const p = new URLSearchParams(params); p.set(pageKey, page); p.set(folderKey, folder);
-    const url = isGet ? (u.origin + u.pathname + '?' + p.toString()) : u.href;
-    const body = isGet ? undefined : isJson ? JSON.stringify(Object.fromEntries(Array.from(p.entries()).map(([k,v]) => [k, /^\d+$/.test(v) ? Number(v) : v]))) : p.toString();
+    const qq = new URLSearchParams(q), bb = new URLSearchParams(b);
+    (pageAt.where === 'q' ? qq : bb).set(pageAt.k, page);
+    (folderAt.where === 'q' ? qq : bb).set(folderAt.k, folder);
+    const url = u.origin + u.pathname + (qq.toString() ? '?' + qq.toString() : '');
+    const body = isGet ? undefined : isJson ? JSON.stringify(Object.fromEntries(Array.from(bb.entries()).map(([k,v]) => [k, /^\d+$/.test(v) ? Number(v) : v]))) : bb.toString();
     const res = await fetch(url, { method: cap.method, headers, body, credentials:'same-origin' });
     if(!res.ok) throw new Error(`一覧の取得に失敗しました(${res.status} ${capInfo})`);
     const j = await res.json();
     return { list: lmeFindList(j, 0) || [], last: lmeFindLast(j, 0) || 1 };
   };
-  const out = [];
-  for(const f of (vm.folders || [])){
+  // フォルダ一覧(「未分類」が一覧に含まれない作りにも対応)
+  const capturedFolder = (folderAt.where === 'q' ? q : b).get(folderAt.k);
+  const folders = (vm.folders || []).map(f => ({ id: f.id, name: f.name }));
+  [capturedFolder, '0'].forEach(id => { if(id !== null && id !== undefined && !folders.some(f => String(f.id) === String(id))) folders.unshift({ id, name: String(id) === '0' ? '未分類' : 'フォルダ' + id }); });
+  const out = [], seenIds = {};
+  for(const f of folders){
     say(`LINE:「${f.name}」を読み取っています…`);
+    const add = l => l.forEach(x => { if(x && !seenIds[x.id]){ seenIds[x.id] = 1; out.push(x); } });
     const first = await get(f.id, 1);
-    out.push(...first.list);
-    for(let pg = 2; pg <= first.last; pg++){ say(`LINE:「${f.name}」${pg}/${first.last}ページ目を読み取っています…`); out.push(...(await get(f.id, pg)).list); }
+    add(first.list);
+    for(let pg = 2; pg <= first.last; pg++){
+      say(`LINE:「${f.name}」${pg}/${first.last}ページ目を読み取っています…`);
+      const l = (await get(f.id, pg)).list;
+      if(!l.length || l.every(x => seenIds[x.id])) break;   // ページ番号が効いていない場合は打ち切り
+      add(l);
+    }
   }
   return out;
 }
