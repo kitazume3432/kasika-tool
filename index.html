@@ -245,7 +245,8 @@ function toSyncRows(rows){
   const seen = {};
   return rows.filter(r => r.status === '配信済み' || r.status === '配信予約').filter(r => { const k = keyOf(r); if(seen[k]) return false; seen[k] = 1; return true; }).map(r => ({
     channel: r.channel || 'KASIKAメール', id: keyOf(r), sendAt: r.sendAt, name: r.name, subject: r.subject || '', target: r.target, status: r.status,
-    delivered: r.delivered, opened: r.opened, openRate: r.openRate, clicked: r.clicked, clickRate: r.clickRate, cv: r.cv, url: r.url
+    delivered: r.delivered, opened: r.opened, openRate: r.openRate, clicked: r.clicked, clickRate: r.clickRate, cv: r.cv, url: r.url,
+    transient: !!r.transient
   }));
 }
 
@@ -432,7 +433,62 @@ async function lmeDirect(vm, say){
   return out;
 }
 
+/* --- エルメの「配信予約」一覧(メッセージ配信 → 配信予約)を読む ---
+   POST /ajax/get-list-broadcast  page=N&status=wait_to_send&filter_month=&per_page=20
+   予約は送り終わると一覧から消えるので、表には残さず(transient)、配信予定のひも付けとカレンダーにだけ使う */
+function lmeObjList(obj, depth){
+  if(!obj || typeof obj !== 'object' || depth > 5) return null;
+  if(Array.isArray(obj)) return obj.length && obj[0] && typeof obj[0] === 'object' && !Array.isArray(obj[0]) ? obj : null;
+  for(const k of Object.keys(obj)){ const r = lmeObjList(obj[k], depth + 1); if(r) return r; }
+  return null;
+}
+function lmePick(o, keys, test){
+  for(const k of keys) if(o[k] !== undefined && o[k] !== null && o[k] !== '' && (!test || test(o[k]))) return o[k];
+  return null;
+}
+function lmeBroadcastRow(b){
+  // エルメの形式:send_day "2026-10-17" + send_time "21:05:00"(変更後は send_day_new / send_time_new)、
+  // 配信先人数 filter_number、管理用タイトル name
+  const day = String(b.send_day_new || b.send_day || '').trim(), tm = String(b.send_time_new || b.send_time || '').trim();
+  const md = day.match(/(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/), mt = tm.match(/(\d{1,2}):(\d{2})/);
+  if(!md) return null;
+  const sendAt = `${md[1]}-${('0'+md[2]).slice(-2)}-${('0'+md[3]).slice(-2)} ${mt ? ('0'+mt[1]).slice(-2) + ':' + mt[2] : '00:00'}`;
+  const name = String(b.name || b.title || '').replace(/\.{3}$|…$/, '').trim();
+  const cnt = Number(b.filter_number ?? b.send_count);
+  return { isNew:'', channel:'LINE', rid:'lme-b-' + (b.id ?? sendAt + name), status:'配信予約', transient:true, name: name || '(LINE配信予約)', subject:'', target:'LINE友だち',
+    sendAt, updatedAt:'', delivered: isNaN(cnt) ? null : cnt, opened:null, openRate:null, clicked:null, clickRate:null, linked:null, cv:null, url:'', targetUrl:'', csvUrl:'', memo:'' };
+}
+async function lmeReservations(){
+  const token = (document.querySelector('meta[name="csrf-token"]') || {}).content;
+  const headers = Object.assign({ 'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With':'XMLHttpRequest' }, token ? { 'X-CSRF-TOKEN': token } : {});
+  const rows = []; let raw = 0;
+  for(let page = 1; page <= 10; page++){
+    const res = await fetch('/ajax/get-list-broadcast', { method:'POST', headers, credentials:'same-origin', body:`page=${page}&status=wait_to_send&filter_month=&per_page=50` });
+    if(!res.ok) throw new Error('配信予約の一覧を取得できませんでした(' + res.status + ')');
+    const j = await res.json();
+    const list = lmeObjList(j, 0) || [];
+    raw += list.length;
+    list.forEach(b => { const r = lmeBroadcastRow(b); if(r) rows.push(r); });
+    if(!list.length || page >= (lmeFindLast(j, 0) || 1)) break;
+  }
+  return { rows, raw };
+}
+
 async function crawlLme(progress){
+  const d = await crawlLmeUrl(progress);
+  try {
+    (progress || function(){})('LINE:配信予約を読み取っています…');
+    const rv = await lmeReservations();
+    if(rv.rows.length){
+      d.pages.push({ channel:'LINE', page:'LINE 配信予約', rows: rv.rows });
+      d.counts.LINE_RESV = rv.rows.length;
+    }
+    if(rv.raw && !rv.rows.length) d.notes.push('LINEの配信予約の形式を読み取れませんでした');
+  } catch(e){ d.notes.push('LINEの配信予約:' + (e && e.message || e)); }
+  return d;
+}
+
+async function crawlLmeUrl(progress){
   const say = m => { try { window.__haishinProgress = m; } catch(e){} (progress || function(){})(m); };
   const started = Date.now(), LIMIT = 150000;   // 2分半を超えたら、そこまでの分で打ち切る
   let vm = null;
@@ -523,7 +579,7 @@ function startOnKasika(cfg){
     b.onclick = fn; btns.appendChild(b); return b; };
   let crawled = null;
   const getData = async () => { if(!crawled) crawled = isLme ? await crawlLme(say) : await crawlKasika(say); return crawled; };
-  const countText = d => isLme ? `LINE ${d.counts.LINE || 0}件(配信数${LINE_MIN_SEND}超・開封数ありのもの)` : `メルマガ ${d.counts['メルマガ'] || 0}件・SMS ${d.counts['SMS'] || 0}件`;
+  const countText = d => isLme ? `LINE ${d.counts.LINE || 0}件(配信数${LINE_MIN_SEND}超・開封数ありのもの)・配信予約 ${d.counts.LINE_RESV || 0}件` : `メルマガ ${d.counts['メルマガ'] || 0}件・SMS ${d.counts['SMS'] || 0}件`;
   const lock = on => btns.querySelectorAll('button').forEach(b => { b.disabled = on; b.style.opacity = on ? .4 : 1; });
   const thisYear = new Date().getFullYear();
   const canSync = cfg && cfg.url && cfg.key;
@@ -625,6 +681,7 @@ function mergeRecords(existing, incoming, now){
   incoming.forEach(r => {
     const k = r.channel + '|' + r.id, e = map.get(k);
     const rec = Object.assign({}, r, { rsv: e ? e.rsv : '', memo: e ? e.memo : '', fetched: now });
+    if(r.transient){ map.set(k, rec); return; }   // LINEの配信予約は表に残さない(数えない)
     if(!e) added.push(rec);
     else if(CMP.some(f => !sameVal(e[f], r[f]))) updated.push({ rec, before: e });
     else unchanged++;
@@ -775,7 +832,7 @@ function reportSheet(year, recs, an){
 function buildSheets(all, an, years){
   const sheets = [];
   years.forEach(y => {
-    const ys = all.filter(r => String(r.sendAt).slice(0,4) === String(y));
+    const ys = all.filter(r => !r.transient && String(r.sendAt).slice(0,4) === String(y));   // LINEの配信予約は年別タブ・分析に入れない
     CH_ORDER.forEach(ch => { const rows = ys.filter(r => r.channel === ch); if(rows.length) sheets.push(channelSheet(y, ch, rows, an)); });
     sheets.push(reportSheet(y, ys, an));
   });
@@ -926,7 +983,8 @@ function linkPlans(plans, all){
       }
       else { if(d.getFullYear() !== p.month.y || d.getMonth() + 1 !== p.month.m) return; days = 1; }   // 日付未定の定例:同じ月の配信と照合
       const sim = Math.max(simText_(p.name, r.name), simText_(p.name, r.subject));
-      if(r.channel === 'LINE' ? sim < 0.4 : !(sim >= 0.35 || (days === 0 && sim >= 0.2))) return;
+      const sameSlot = p.date && days === 0 && p.time && p.time === String(r.sendAt).slice(11,16);   // 同じ日・同じ時刻
+      if(r.channel === 'LINE' ? !(sim >= 0.4 || (sameSlot && sim >= 0.15)) : !(sim >= 0.35 || (days === 0 && sim >= 0.2))) return;
       pairs.push({ p, r, score: sim * 3 - days * 0.3 + (p.time && p.time === String(r.sendAt).slice(11,16) ? 0.5 : 0) });
     });
   });
