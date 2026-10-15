@@ -791,18 +791,20 @@ function sheetOrder(allYears){
 const PLAN_SHEET = '配信予定';
 const PLAN_COLS = ['planDate','name','eventDate','planTime','target','memo','state','check','delivered','openRate','clickRate','grade','linkId','tplKey'];
 const PLAN_MANUAL = ['planDate','name','eventDate','planTime','target','memo'];
-const PLAN_LABEL = { eventDate:'開催日', name:'イベント名(配信名)', planDate:'配信日(予定日)', planTime:'時刻', target:'対象', memo:'メモ',
+const PLAN_LABEL = { eventDate:'開催日', name:'イベント名(配信名)', planDate:'配信日(予定日)', planTime:'時刻', target:'対象者', memo:'メモ',
   state:'状態(自動)', check:'事前チェック(自動)', delivered:'送信数(実績)', openRate:'開封率(実績)', clickRate:'クリック率(実績)', grade:'評価(実績)', linkId:'KASIKA ID', tplKey:'定例(自動)' };
 // 以前の見出し名(読み込み時だけ使う)
-const PLAN_OLD_LABEL = { '予定日':'planDate', '配信名(案)':'name', '件名(案)':'oldSubject', '目的':'oldPurpose', '担当':'oldOwner' };
+const PLAN_OLD_LABEL = { '対象':'target', '予定日':'planDate', '配信名(案)':'name', '件名(案)':'oldSubject', '目的':'oldPurpose', '担当':'oldOwner' };
 const PLAN_WIDTH = { eventDate:110, name:260, planDate:120, planTime:60, channel:70, target:210, memo:220, state:130, check:440, delivered:70, openRate:75, clickRate:80, grade:80, linkId:120, tplKey:170 };
-const PLAN_TARGET_OPTIONS = ['新規（見込み顧客）','全員（見込み顧客、OB顧客）','OB（OB顧客）','SMS見込み（ショートメールで案内）','LINE（友だち）'];
+const PLAN_TARGET_OPTIONS = ['新規（見込み顧客）','全員（見込み顧客、OB顧客）','OB（OB顧客）','SMS見込み（ショートメールで案内）','LINE新規','LINE全員'];
 // 対象の色(以前のチェックシートと同じ配色)
 const PLAN_TARGET_COLORS = [
   { text:'新規（見込み顧客）', bg:'#CFE5FB', color:'#1F4E79' },
   { text:'全員（見込み顧客、OB顧客）', bg:'#FBD7C4', color:'#7A3410' },
   { text:'OB（OB顧客）', bg:'#E6D7F4', color:'#4B2A6B' },
   { text:'SMS見込み（ショートメールで案内）', bg:'#D6EFC4', color:'#2F5A1A' },
+  { text:'LINE新規', bg:'#C8F0D8', color:'#0B6B35' },
+  { text:'LINE全員', bg:'#9EE0B6', color:'#064D25' },
   { text:'LINE（友だち）', bg:'#C8F0D8', color:'#0B6B35' }
 ];
 // 毎年必ず入れる定例配信(今月から12か月先までを自動で予定に入れる)。d があるものは日付も入れる
