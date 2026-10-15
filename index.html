@@ -1103,7 +1103,9 @@ function buildPlanSheet(plans, lk, an, all){
     return { p, v, done: v.state === '配信済み' };
   });
   LAST_PLAN_ROWS = rows;
-  const sortT = p => p.date ? p.date.getTime() : p.month ? new Date(p.month.y, p.month.m - 1, 1).getTime() : 9e15;
+  // 同じ月の中では、配信日が入っている予定を日付順に先に並べ、日付未定(〇月中)の予定はその月の最後に置く
+  const sortT = p => p.date ? p.date.getTime() + (p.time ? (+p.time.slice(0,2) * 60 + +p.time.slice(3,5)) * 60000 : 0)
+    : p.month ? new Date(p.month.y, p.month.m, 0, 23, 59, 59).getTime() : 9e15;
   rows.forEach(x => { x.done = x.v.state === '配信済み' || x.v.state === '中止'; });
   const open = rows.filter(x => !x.done).sort((a,b) => sortT(a.p) - sortT(b.p));
   const done = rows.filter(x => x.done).sort((a,b) => sortT(b.p) - sortT(a.p));
