@@ -352,6 +352,65 @@ async function crawlKasika(progress){
 /* --- エルメ(L Message)のURL分析を全フォルダ・全ページ読み取る(エルメの画面上で動く) ---
    対象:配信数が200を超え、開封数・開封率が表示されているもの(「- / -」でないもの) */
 const LINE_MIN_SEND = 200;
+/* エルメの一覧データを、画面の切り替えではなく通信で直接取得する(裏のタブでも止まりにくい)
+   1) 画面の「ページ切り替え」を1回だけ呼び、その時の通信(URL・送る値)を記録
+   2) 同じ通信を、フォルダ・ページを変えて自分で送り、返ってきたデータから一覧を取り出す */
+async function lmeCaptureRequest(vm, action){
+  const XO = XMLHttpRequest.prototype.open, XS = XMLHttpRequest.prototype.send, XH = XMLHttpRequest.prototype.setRequestHeader, F = window.fetch;
+  let cap = null;
+  XMLHttpRequest.prototype.open = function(m, u){ this.__cap = { method: m, url: u, headers: {} }; return XO.apply(this, arguments); };
+  XMLHttpRequest.prototype.setRequestHeader = function(k, v){ if(this.__cap) this.__cap.headers[k] = v; return XH.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function(b){ if(this.__cap && !cap) cap = Object.assign(this.__cap, { body: typeof b === 'string' ? b : (b instanceof FormData ? new URLSearchParams(Array.from(b.entries())).toString() : '') }); return XS.apply(this, arguments); };
+  window.fetch = function(u, o){ if(!cap) cap = { method: (o && o.method) || 'GET', url: String(u && u.url || u), headers: Object.assign({}, o && o.headers), body: o && typeof o.body === 'string' ? o.body : '' }; return F.apply(this, arguments); };
+  try { action(); } finally { XMLHttpRequest.prototype.open = XO; XMLHttpRequest.prototype.send = XS; XMLHttpRequest.prototype.setRequestHeader = XH; window.fetch = F; }
+  return cap;
+}
+function lmeFindList(obj, depth){
+  if(!obj || typeof obj !== 'object' || depth > 5) return null;
+  if(Array.isArray(obj)) return obj.length && obj[0] && typeof obj[0] === 'object' && 'number_send' in obj[0] ? obj : (obj.length === 0 ? obj : null);
+  for(const k of Object.keys(obj)){ const v = obj[k]; const r = lmeFindList(v, depth + 1); if(r && (r.length || /data|list|url/i.test(k))) return r; }
+  return null;
+}
+function lmeFindLast(obj, depth){
+  if(!obj || typeof obj !== 'object' || depth > 5) return null;
+  if('last_page' in obj) return Number(obj.last_page) || 1;
+  for(const k of Object.keys(obj)){ const r = lmeFindLast(obj[k], depth + 1); if(r) return r; }
+  return null;
+}
+async function lmeDirect(vm, say){
+  const curFolder = vm.folder_id, curPage = vm.pagination ? Number(vm.pagination.current_page) || 1 : 1;
+  const probe = (vm.pagination && Number(vm.pagination.last_page) > 1) ? (curPage === 1 ? 2 : 1) : curPage;
+  const cap = await lmeCaptureRequest(vm, () => vm.changePage(probe));
+  if(!cap || !cap.url) return null;
+  // 送った値のうち、どれがページ番号・フォルダかを見分ける
+  const u = new URL(cap.url, location.href);
+  const isGet = String(cap.method).toUpperCase() === 'GET';
+  const params = new URLSearchParams(isGet ? u.search : cap.body);
+  let pageKey = null, folderKey = null;
+  params.forEach((v, k) => { if(!pageKey && /page/i.test(k) && String(v) === String(probe)) pageKey = k; });
+  params.forEach((v, k) => { if(!folderKey && k !== pageKey && /folder|group|category/i.test(k) && String(v) === String(curFolder)) folderKey = k; });
+  if(!pageKey) params.forEach((v, k) => { if(!pageKey && String(v) === String(probe)) pageKey = k; });
+  if(!pageKey || !folderKey) return null;
+  const token = (document.querySelector('meta[name="csrf-token"]') || {}).content;
+  const headers = Object.assign({ 'X-Requested-With':'XMLHttpRequest' }, token ? { 'X-CSRF-TOKEN': token } : {}, cap.headers || {});
+  if(!isGet && !Object.keys(headers).some(h => /content-type/i.test(h))) headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+  const get = async (folder, page) => {
+    const p = new URLSearchParams(params); p.set(pageKey, page); p.set(folderKey, folder);
+    const url = isGet ? (u.origin + u.pathname + '?' + p.toString()) : u.href;
+    const res = await fetch(url, { method: cap.method, headers, body: isGet ? undefined : p.toString(), credentials:'same-origin' });
+    const j = await res.json();
+    return { list: lmeFindList(j, 0) || [], last: lmeFindLast(j, 0) || 1 };
+  };
+  const out = [];
+  for(const f of (vm.folders || [])){
+    say(`LINE:「${f.name}」を読み取っています…`);
+    const first = await get(f.id, 1);
+    out.push(...first.list);
+    for(let pg = 2; pg <= first.last; pg++){ say(`LINE:「${f.name}」${pg}/${first.last}ページ目を読み取っています…`); out.push(...(await get(f.id, pg)).list); }
+  }
+  return out;
+}
+
 async function crawlLme(progress){
   const say = m => { try { window.__haishinProgress = m; } catch(e){} (progress || function(){})(m); };
   const started = Date.now(), LIMIT = 150000;   // 2分半を超えたら、そこまでの分で打ち切る
@@ -382,6 +441,14 @@ async function crawlLme(progress){
       linked: null, cv: null, url: u.url || '', targetUrl:'', csvUrl:'', memo:'' };
   };
   const take = () => (vm.url_list || []).forEach(u => { if(seen[u.id]) return; seen[u.id] = 1; const r = toRow(u); if(r) rows.push(r); });
+  // まず通信で直接取得(速くて確実)。うまくいかない場合だけ、画面を切り替えて読み取る方法にする
+  try {
+    const list = await lmeDirect(vm, say);
+    if(list && list.length){
+      list.forEach(u => { if(seen[u.id]) return; seen[u.id] = 1; const r = toRow(u); if(r) rows.push(r); });
+      return { pages: rows.length ? [{ channel:'LINE', page:'LINE', rows }] : [], notes, counts: { LINE: rows.length } };
+    }
+  } catch(e){ /* 画面切り替え方式に切り替える */ }
   const folders = (vm.folders || []).slice();
   let timeUp = false;
   for(const f of folders){
