@@ -316,7 +316,7 @@ function syncResultHtml(res){
 
 /* --- KASIKAの一覧を全ページ読み取る(KASIKAの画面上で動く) --- */
 async function crawlKasika(progress){
-  const say = progress || function(){};
+  const say = m => { try { window.__haishinProgress = m; } catch(e){} (progress || function(){})(m); };
   const SOURCES = [
     { label:'メルマガ', channel:'KASIKAメール', path:'/campaign_list.php', fn: extractRows },
     { label:'SMS', channel:'SMS', path:'/mktg-sms/list', fn: extractSmsRows }
@@ -353,12 +353,24 @@ async function crawlKasika(progress){
    対象:配信数が200を超え、開封数・開封率が表示されているもの(「- / -」でないもの) */
 const LINE_MIN_SEND = 200;
 async function crawlLme(progress){
-  const say = progress || function(){};
+  const say = m => { try { window.__haishinProgress = m; } catch(e){} (progress || function(){})(m); };
+  const started = Date.now(), LIMIT = 150000;   // 2分半を超えたら、そこまでの分で打ち切る
   let vm = null;
   document.querySelectorAll('*').forEach(el => { if(!vm && el.__vue__ && el.__vue__.$data && 'url_list' in el.__vue__.$data) vm = el.__vue__; });
   if(!vm) return { pages: [], notes: ['URL分析の一覧が見つかりませんでした。エルメの「URL分析」画面で実行してください'], counts: {} };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const waitList = async (prev, ok) => { for(let i = 0; i < 100; i++){ await sleep(200); if(vm.url_list !== prev && (!ok || ok())) { await sleep(150); return true; } } return false; };
+  // 一覧の切り替わりを待つ(表示中のIDの並び・フォルダ・ページが変わったら完了。空のフォルダなどで変化がない場合は3秒で次へ)
+  const sig = () => (vm.url_list || []).map(u => u.id).join(',') + '|' + vm.folder_id + '|' + (vm.pagination ? vm.pagination.current_page : '');
+  const waitList = async (prevSig, ok) => {
+    let okSince = 0;
+    for(let i = 0; i < 60; i++){
+      await sleep(250);
+      const good = !ok || ok();
+      if(good && sig() !== prevSig){ await sleep(300); return true; }
+      if(good){ okSince = okSince || Date.now(); if(Date.now() - okSince > 3000) return true; }
+    }
+    return false;
+  };
   const startFolder = vm.folder_id, startPage = vm.pagination ? vm.pagination.current_page : 1;
   const seen = {}, rows = [], notes = [];
   const toRow = u => {
@@ -371,21 +383,26 @@ async function crawlLme(progress){
   };
   const take = () => (vm.url_list || []).forEach(u => { if(seen[u.id]) return; seen[u.id] = 1; const r = toRow(u); if(r) rows.push(r); });
   const folders = (vm.folders || []).slice();
+  let timeUp = false;
   for(const f of folders){
-    say(`LINE:「${f.name}」を読み取っています…`);
-    if(vm.folder_id !== f.id){ const prev = vm.url_list; vm.chooseFolder(f.id); if(!await waitList(prev, () => vm.folder_id === f.id)){ notes.push(`「${f.name}」を読み込めませんでした`); continue; } }
-    else if(vm.pagination && vm.pagination.current_page !== 1){ const prev = vm.url_list; vm.changePage(1); await waitList(prev); }
+    if(Date.now() - started > LIMIT){ timeUp = true; break; }
+    say(`LINE:「${f.name}」を読み取っています…(${rows.length}件)`);
+    if(vm.folder_id !== f.id){ const prev = sig(); vm.chooseFolder(f.id); if(!await waitList(prev, () => vm.folder_id === f.id)){ notes.push(`「${f.name}」を読み込めませんでした`); continue; } }
+    else if(vm.pagination && vm.pagination.current_page !== 1){ const prev = sig(); vm.changePage(1); await waitList(prev, () => vm.pagination.current_page === 1); }
     take();
     const last = vm.pagination ? vm.pagination.last_page || 1 : 1;
     for(let pg = 2; pg <= last; pg++){
-      say(`LINE:「${f.name}」${pg}/${last}ページ目を読み取っています…`);
-      const prev = vm.url_list; vm.changePage(pg);
+      if(Date.now() - started > LIMIT){ timeUp = true; break; }
+      say(`LINE:「${f.name}」${pg}/${last}ページ目を読み取っています…(${rows.length}件)`);
+      const prev = sig(); vm.changePage(pg);
       if(!await waitList(prev, () => vm.pagination.current_page === pg)){ notes.push(`「${f.name}」の${pg}ページ目を読み込めませんでした`); break; }
       take();
     }
+    if(timeUp) break;
   }
+  if(timeUp) notes.push('時間がかかりすぎたため、途中までの分で転記しました');
   // 元の表示に戻す
-  try { if(vm.folder_id !== startFolder){ const prev = vm.url_list; vm.chooseFolder(startFolder); await waitList(prev); } if(startPage > 1){ vm.changePage(startPage); } } catch(e){}
+  try { if(vm.folder_id !== startFolder){ const prev = sig(); vm.chooseFolder(startFolder); await waitList(prev, () => vm.folder_id === startFolder); } if(startPage > 1){ vm.changePage(startPage); } } catch(e){}
   return { pages: rows.length ? [{ channel:'LINE', page:'LINE', rows }] : [], notes, counts: { LINE: rows.length } };
 }
 
