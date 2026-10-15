@@ -357,12 +357,14 @@ const LINE_MIN_SEND = 200;
    2) 同じ通信を、フォルダ・ページを変えて自分で送り、返ってきたデータから一覧を取り出す */
 async function lmeCaptureRequest(vm, action){
   const XO = XMLHttpRequest.prototype.open, XS = XMLHttpRequest.prototype.send, XH = XMLHttpRequest.prototype.setRequestHeader, F = window.fetch;
-  let cap = null;
+  let cap = null, done = null;
+  const got = new Promise(r => { done = r; });
   XMLHttpRequest.prototype.open = function(m, u){ this.__cap = { method: m, url: u, headers: {} }; return XO.apply(this, arguments); };
   XMLHttpRequest.prototype.setRequestHeader = function(k, v){ if(this.__cap) this.__cap.headers[k] = v; return XH.apply(this, arguments); };
-  XMLHttpRequest.prototype.send = function(b){ if(this.__cap && !cap) cap = Object.assign(this.__cap, { body: typeof b === 'string' ? b : (b instanceof FormData ? new URLSearchParams(Array.from(b.entries())).toString() : '') }); return XS.apply(this, arguments); };
-  window.fetch = function(u, o){ if(!cap) cap = { method: (o && o.method) || 'GET', url: String(u && u.url || u), headers: Object.assign({}, o && o.headers), body: o && typeof o.body === 'string' ? o.body : '' }; return F.apply(this, arguments); };
-  try { action(); } finally { XMLHttpRequest.prototype.open = XO; XMLHttpRequest.prototype.send = XS; XMLHttpRequest.prototype.setRequestHeader = XH; window.fetch = F; }
+  XMLHttpRequest.prototype.send = function(b){ if(this.__cap && !cap){ cap = Object.assign(this.__cap, { body: typeof b === 'string' ? b : (b instanceof FormData ? new URLSearchParams(Array.from(b.entries())).toString() : (b && typeof b === 'object' && !(b instanceof Blob) ? JSON.stringify(b) : '')) }); done(); } return XS.apply(this, arguments); };
+  window.fetch = function(u, o){ if(!cap){ cap = { method: (o && o.method) || 'GET', url: String(u && u.url || u), headers: Object.assign({}, o && o.headers), body: o && typeof o.body === 'string' ? o.body : '' }; done(); } return F.apply(this, arguments); };
+  try { action(); await Promise.race([got, new Promise(r => setTimeout(r, 5000))]); }
+  finally { XMLHttpRequest.prototype.open = XO; XMLHttpRequest.prototype.send = XS; XMLHttpRequest.prototype.setRequestHeader = XH; window.fetch = F; }
   return cap;
 }
 function lmeFindList(obj, depth){
@@ -381,23 +383,32 @@ async function lmeDirect(vm, say){
   const curFolder = vm.folder_id, curPage = vm.pagination ? Number(vm.pagination.current_page) || 1 : 1;
   const probe = (vm.pagination && Number(vm.pagination.last_page) > 1) ? (curPage === 1 ? 2 : 1) : curPage;
   const cap = await lmeCaptureRequest(vm, () => vm.changePage(probe));
-  if(!cap || !cap.url) return null;
+  if(!cap || !cap.url) throw new Error('一覧の通信を見つけられませんでした');
   // 送った値のうち、どれがページ番号・フォルダかを見分ける
   const u = new URL(cap.url, location.href);
   const isGet = String(cap.method).toUpperCase() === 'GET';
-  const params = new URLSearchParams(isGet ? u.search : cap.body);
+  const isJson = !isGet && /^\s*\{/.test(cap.body || '');
+  let params;
+  if(isJson){ params = new URLSearchParams(); try { const o = JSON.parse(cap.body); Object.keys(o).forEach(k => params.set(k, o[k] === null ? '' : String(o[k]))); } catch(e){} }
+  else params = new URLSearchParams(isGet ? u.search : cap.body);
+  const capInfo = `${cap.method} ${u.pathname}${isGet ? u.search : ''} ${isGet ? '' : String(cap.body || '').slice(0, 120)}`;
   let pageKey = null, folderKey = null;
   params.forEach((v, k) => { if(!pageKey && /page/i.test(k) && String(v) === String(probe)) pageKey = k; });
   params.forEach((v, k) => { if(!folderKey && k !== pageKey && /folder|group|category/i.test(k) && String(v) === String(curFolder)) folderKey = k; });
   if(!pageKey) params.forEach((v, k) => { if(!pageKey && String(v) === String(probe)) pageKey = k; });
-  if(!pageKey || !folderKey) return null;
+  if(!pageKey || !folderKey){
+    // フォルダの値が送られていない作りの場合は、ページ番号だけ変えて今のフォルダ分を読む(他のフォルダは画面切り替えで)
+    throw new Error(`通信の形式が想定と違いました(${capInfo})`);
+  }
   const token = (document.querySelector('meta[name="csrf-token"]') || {}).content;
   const headers = Object.assign({ 'X-Requested-With':'XMLHttpRequest' }, token ? { 'X-CSRF-TOKEN': token } : {}, cap.headers || {});
-  if(!isGet && !Object.keys(headers).some(h => /content-type/i.test(h))) headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+  if(!isGet && !Object.keys(headers).some(h => /content-type/i.test(h))) headers['Content-Type'] = isJson ? 'application/json' : 'application/x-www-form-urlencoded; charset=UTF-8';
   const get = async (folder, page) => {
     const p = new URLSearchParams(params); p.set(pageKey, page); p.set(folderKey, folder);
     const url = isGet ? (u.origin + u.pathname + '?' + p.toString()) : u.href;
-    const res = await fetch(url, { method: cap.method, headers, body: isGet ? undefined : p.toString(), credentials:'same-origin' });
+    const body = isGet ? undefined : isJson ? JSON.stringify(Object.fromEntries(Array.from(p.entries()).map(([k,v]) => [k, /^\d+$/.test(v) ? Number(v) : v]))) : p.toString();
+    const res = await fetch(url, { method: cap.method, headers, body, credentials:'same-origin' });
+    if(!res.ok) throw new Error(`一覧の取得に失敗しました(${res.status} ${capInfo})`);
     const j = await res.json();
     return { list: lmeFindList(j, 0) || [], last: lmeFindLast(j, 0) || 1 };
   };
@@ -421,6 +432,17 @@ async function crawlLme(progress){
   // 一覧の切り替わりを待つ(表示中のIDの並び・フォルダ・ページが変わったら完了。空のフォルダなどで変化がない場合は3秒で次へ)
   const sig = () => (vm.url_list || []).map(u => u.id).join(',') + '|' + vm.folder_id + '|' + (vm.pagination ? vm.pagination.current_page : '');
   const waitList = async (prevSig, ok) => {
+    if(typeof vm.$watch === 'function'){
+      // Vueの変更通知で待つ(裏のタブでも遅れない)。15秒で打ち切り
+      return await new Promise(res => {
+        let fin = false, stop = null;
+        const end = v => { if(fin) return; fin = true; try { stop && stop(); } catch(e){} res(v); };
+        const check = () => { if((!ok || ok()) && sig() !== prevSig) Promise.resolve().then(() => end(true)); };
+        stop = vm.$watch(() => sig(), check);
+        check();
+        setTimeout(() => end(!ok || ok()), 15000);
+      });
+    }
     let okSince = 0;
     for(let i = 0; i < 60; i++){
       await sleep(250);
@@ -448,7 +470,7 @@ async function crawlLme(progress){
       list.forEach(u => { if(seen[u.id]) return; seen[u.id] = 1; const r = toRow(u); if(r) rows.push(r); });
       return { pages: rows.length ? [{ channel:'LINE', page:'LINE', rows }] : [], notes, counts: { LINE: rows.length } };
     }
-  } catch(e){ /* 画面切り替え方式に切り替える */ }
+  } catch(e){ notes.push('直接取得できず画面切り替えで読み取り:' + (e && e.message || e)); }
   const folders = (vm.folders || []).slice();
   let timeUp = false;
   for(const f of folders){
@@ -462,7 +484,7 @@ async function crawlLme(progress){
       if(Date.now() - started > LIMIT){ timeUp = true; break; }
       say(`LINE:「${f.name}」${pg}/${last}ページ目を読み取っています…(${rows.length}件)`);
       const prev = sig(); vm.changePage(pg);
-      if(!await waitList(prev, () => vm.pagination.current_page === pg)){ notes.push(`「${f.name}」の${pg}ページ目を読み込めませんでした`); break; }
+      if(!await waitList(prev, () => Number(vm.pagination.current_page) === pg)){ notes.push(`「${f.name}」の${pg}ページ目を読み込めませんでした`); break; }
       take();
     }
     if(timeUp) break;
