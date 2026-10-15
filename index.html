@@ -286,11 +286,11 @@ async function syncSheet(opts){
   if(opts.dryRun) return res;
   say('書き込み中…(件数が多い初回は1〜3分かかります。このまま待ってください)');
   const sheets = buildSheets(mg.all, an, years);
-  if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS, mg.all)); }
+  if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS, mg.all), buildGuideSheet()); }
   const deleteSheets = legacy.filter(n => n === '配信実績' ? !sel : years.includes(+n.slice(0,4)));
   const order = sheetOrder(Array.from(new Set(allYears.concat(read.sheets.map(s => +(s.name.match(/^(\d{4})年/)||[])[1]).filter(Boolean)))));
   let w;
-  try { w = await call({ action:'write', allow:[PLAN_SHEET, CAL_SHEET], sheets, deleteSheets, order }); }
+  try { w = await call({ action:'write', allow:[PLAN_SHEET, CAL_SHEET, GUIDE_SHEET], sheets, deleteSheets, order }); }
   catch(e){ return { ok:false, error:'書き込み中に接続が切れました。少し待ってからスプレッドシートを確認し、必要ならもう一度転記してください。' }; }
   if(!w.ok) return { ok:false, error: w.error || '不明なエラー' };
   return res;
@@ -839,7 +839,7 @@ function buildSheets(all, an, years){
   return sheets;
 }
 function sheetOrder(allYears){
-  const order = [PLAN_SHEET, CAL_SHEET];
+  const order = [PLAN_SHEET, CAL_SHEET, GUIDE_SHEET];
   allYears.slice().sort((a,b)=>b-a).forEach(y => { CH_ORDER.forEach(ch => order.push(`${y}年_${CH_TAB[ch]}`)); order.push(`${y}年_分析`); });
   return order;
 }
@@ -1032,6 +1032,86 @@ function planCheck(p, an, all, plans, linked){
   return lines.join('\n');
 }
 let LAST_PLAN_ROWS = [];
+
+/* --- 使い方タブ(スタッフ向けの説明。転記のたびに最新の内容で作り直す) --- */
+const GUIDE_SHEET = '使い方ガイド';
+function buildGuideSheet(){
+  const out = [];
+  const t = (type, a, b) => out.push([type, [a || '', b || '']]);
+  const tmplMonths = name => PLAN_TEMPLATES.filter(x => x.name === name && !x.keySuffix).map(x => x.m + '月' + (x.d ? x.d + '日' : '')).join('・');
+  t('title', '配信実績(KASIKA・SMS・LINE)使い方ガイド');
+  t('', 'このスプレッドシートは', 'KASIKA(メール・SMS)とエルメ(LINE)の配信実績と、これから送る配信予定をまとめたものです。毎朝10時に自動で最新の数字に更新されます。');
+  t('', '', '');
+  t('section', '■ タブの説明');
+  t('head', 'タブ', '内容');
+  t('', '配信予定', 'これから送る予定の一覧。スタッフが入力する場所です(開くと最初にこのタブが表示されます)');
+  t('', '配信カレンダー', '配信予定と配信済みをカレンダーで表示。今月が一番上、過去2か月分は一番下です');
+  t('', '〇〇年_メール / _SMS / _LINE', 'その年の配信実績(送信数・開封率・クリック率など)。新しい順に並びます');
+  t('', '〇〇年_分析', 'チャネル別・月別・時間帯別・曜日別・内容別の集計と、配信ごとの評価・改善案・参考ポイント');
+  t('', '', '');
+  t('section', '■ 入力してよい場所(重要)');
+  t('warn', '茶色の見出しの列だけ', '「配信予定」タブの 配信日・イベント名・開催日・時刻・対象者・メモ と、年別タブの 予約数・メモ です。');
+  t('warn', 'それ以外の列・タブ', '黒い見出しの列や、カレンダー・分析タブは自動で作り直されるため、書き込んでも次の更新で消えます。列の追加・削除・並び替えもしないでください。');
+  t('', '', '');
+  t('section', '■ 予定のかんたん入力(おすすめ)');
+  t('', '1件ずつ追加', 'メニューの「配信予定」→「予定を追加(1件ずつ)」。日付はカレンダーから選べ、イベント名は過去の名前から選べます。続けて何件でも追加できます');
+  t('', 'まとめて追加', 'メニューの「配信予定」→「まとめて追加(見学会・イベント)」。イベント名・開催日・配信先(メール/SMS/LINE)・告知のタイミング(21日前・14日前・7日前など)を選ぶと、告知の予定が一度に作れます。追加前に日付・時刻を直したり、不要な行を外したりできます');
+  t('', 'メニューが出ないとき', 'スプレッドシートを開き直してください(編集者のみ使えます)');
+  t('', '', '');
+  t('section', '■ 配信予定の入れ方(直接入力する場合)');
+  t('head', '列', '入れ方');
+  t('', '配信日(予定日)', '「10/24」のように入力すると「2026/10/24(土)」と曜日付きで表示されます。未定なら空欄でOK');
+  t('', 'イベント名(配信名)', 'KASIKA・エルメで付ける名前に近い名前にすると、送った後に実績と自動でひも付きます');
+  t('', '開催日', '見学会・イベントの開催日。2日間は「11/21.22」「11/21・22」のように入力。カレンダーに【開催】と表示され、告知のタイミングもチェックされます');
+  t('', '時刻', '「21:05」のように入力');
+  t('', '対象者(プルダウン)', '新規(見込み顧客)/全員(見込み顧客、OB顧客)/OB(OB顧客)…KASIKAメール、SMS見込み…SMS、LINE新規/LINE全員…LINE。ここでチャネル(メール・SMS・LINE)が決まります');
+  t('', 'メモ', '自由に記入。「中止」と書くと、その行がすぐ灰色になり、カレンダーからも消えます');
+  t('', '入力する場所', '下の空いている行ならどこでもOK。次の自動更新で月ごとの正しい位置に並び替わります');
+  t('', '', '');
+  t('section', '■ 状態(自動)の意味');
+  t('head', '表示', '意味');
+  t('', '予定', 'まだKASIKA・エルメに登録されていない予定');
+  t('', '予定(〇月中・日付未定)', '定例配信で、配信日がまだ決まっていないもの。決まったら配信日を入力してください');
+  t('', '配信予約', 'KASIKA・エルメに予約済み(送信数の欄に予定人数が入ります)');
+  t('', '配信済み', '送信済み。送信数・開封率・クリック率・評価が入り、灰色になって下にまとまります');
+  t('', '要確認', '予定日(定例は予定の月)を過ぎても配信が見つからないもの。送った場合は名前の違いを、送らない場合はメモに「中止」を');
+  t('', '中止', 'メモに「中止」と書いたもの');
+  t('', '', '');
+  t('section', '■ 定例配信(毎年自動で予定に入ります)');
+  t('', '休暇・挨拶', `新年のご挨拶(1/1)、ＧＷ休暇(4/25)、夏季休暇(8/5)、年末年始休暇(12/25)`);
+  t('', 'モデルハウス案内', 'ソトウチ(12・3・6・9月)/レノ(1・4・7・10月)/リラクラス(2・5・8・11月)…メールとSMSの両方、21:05');
+  t('', 'すまいるくらぶ', tmplMonths('すまいるくらぶ') + '、21:05、全員');
+  t('', 'マルシェ', tmplMonths('マルシェ') + '、21:05、全員とSMS');
+  t('', '送らない回', '行を消しても次の更新で戻ります。メモに「中止」と書いてください');
+  t('', '', '');
+  t('section', '■ 配信カレンダーの見方');
+  t('done', '緑', '配信済み(先頭に ✓)');
+  t('resv', '青', 'KASIKA・エルメに予約済み');
+  t('plan', 'ベージュ', '予定(まだ未登録)');
+  t('event', 'オレンジ', 'イベント開催日(【開催】)');
+  t('today', '黄色', '今日');
+  t('', '(SMS)(LINE)', 'そのチャネルでの配信。何も付いていないものはメール');
+  t('', '日付未定:…', 'その月に送る予定で、日付がまだ決まっていないもの');
+  t('', '', '');
+  t('section', '■ 評価(◎ 良い / △ 要改善)と事前チェック');
+  t('', '評価の基準', '同じチャネルの過去の配信の中央値と比べ、開封率・クリック率の総合が1.2倍以上で「◎ 良い」、0.8倍以下で「△ 要改善」。送信数' + MIN_SENT + '未満は対象外');
+  t('', '改善案・参考ポイント', '「〇〇年_分析」タブの下の方「配信ごとの評価とコメント」に、配信ごとの改善案(△)と参考ポイント(◎)があります');
+  t('', '事前チェック', '配信予定の「事前チェック」欄に、送る前の目安(おすすめの時刻・曜日、告知日数、同じ種類の過去の結果、前後の配信との間隔)が自動で入ります');
+  t('', 'LINEの日付', 'LINEの実績の日付は、エルメでURLを登録した日時です。実際の配信日時とずれることがあります');
+  t('', '', '');
+  t('section', '■ 困ったとき');
+  t('', '数字が古い', '自動更新は毎朝10時です。急ぎの場合は北爪まで');
+  t('', 'その他', '表がおかしい、項目を増やしたいなどは北爪まで');
+  const styles = Object.assign({}, STYLES, {
+    warn:{ bg:'#FBE3DF' }, done:{ bg:'#DCEFD6' }, resv:{ bg:'#DDEBF7' }, plan:{ bg:'#FBF1DF' }, event:{ bg:'#FCE3D2' }, today:{ bg:'#FFF1C9' }
+  });
+  const cellStyles = [];
+  out.forEach(([type], i) => { if(['warn','done','resv','plan','event','today'].includes(type)) cellStyles.push([i, 0, type]); if(type === 'warn') cellStyles.push([i, 0, 'warn']); });
+  return { name: GUIDE_SHEET, values: out.map(([, c]) => c), styles,
+    rowStyles: out.map(([type]) => ['title','section','head'].includes(type) ? type : null), cellStyles,
+    wrapCols: [0, 1], widths: [220, 700], frozenRows: 0 };
+}
+
 /* --- 配信カレンダー(配信予定をカレンダー表示。今月から12か月分) --- */
 const CAL_SHEET = '配信カレンダー';
 const CAL_PAST_MONTHS = 2;   // 今月より前に何か月分表示するか(配信済みの確認用)
