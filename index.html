@@ -77,7 +77,7 @@ input[type=file]{display:none}
   <div class="bm">
     <p class="hint"><b>はじめに1回だけ:</b>先に下の「04」で転記用URLと合言葉を入力してから、下のボタンをブラウザのブックマークバーへドラッグして登録してください(ブックマークバーが出ていない場合は <b>Ctrl+Shift+B</b>)。<span id="bmState"></span></p>
     <a class="bmlink" id="bmLink" href="#">KASIKA→Excel</a>
-    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAにログインした状態で(どの画面でも可)ブックマーク「KASIKA→Excel」をクリック。右上のパネルで<b>「今年のみ転記」</b>か<b>「すべての年を転記」</b>を押すと、メルマガとSMSを全ページ読み取ってスプレッドシートに転記します(このツールを開く必要はありません)。Excelが欲しいときは「Excelツールで開く」を押してください。</p>
+    <p class="hint" style="margin-top:12px"><b>毎回の操作:</b>KASIKAにログインした状態で(どの画面でも可)、またはエルメ(L Message)の「URL分析」画面で、ブックマーク「KASIKA→Excel」をクリック。右上のパネルで<b>「今年のみ転記」</b>か<b>「すべての年を転記」</b>を押すと、メルマガとSMSを全ページ読み取ってスプレッドシートに転記します(このツールを開く必要はありません)。Excelが欲しいときは「Excelツールで開く」を押してください。</p>
     <p class="hint">※ ブックマークを押すたびに、このページの最新の処理を読み込んで動きます。ツールを更新してもブックマークの登録し直しは不要です(転記用URL・合言葉を変えたときだけ登録し直してください)。</p>
   </div>
   <p class="hint" id="recvNote" hidden></p>
@@ -231,6 +231,7 @@ function extractSmsRows(table){
 function isSmsTable(table){
   return !!table.querySelector('a[href*="/mktg-sms/detail"]') || /一斉配信SMS名/.test(table.tHead ? table.tHead.textContent : '');
 }
+function keyOf(r){ return r.rid || cidOf(r.url); }   // LINEは取得元IDで、KASIKAはURLのcidで同じ配信を見分ける
 function cidOf(url){
   const m = String(url||'').match(/[?&]cid=([0-9a-f]+)/i) || String(url||'').match(/\/detail\/([0-9a-f]+)/i);
   return m ? m[1] : String(url||'').trim();
@@ -242,8 +243,8 @@ function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':
 /* --- 取り込んだ行 → 転記用データ --- */
 function toSyncRows(rows){
   const seen = {};
-  return rows.filter(r => r.status === '配信済み' || r.status === '配信予約').filter(r => { const k = cidOf(r.url); if(seen[k]) return false; seen[k] = 1; return true; }).map(r => ({
-    channel: r.channel || 'KASIKAメール', id: cidOf(r.url), sendAt: r.sendAt, name: r.name, subject: r.subject || '', target: r.target, status: r.status,
+  return rows.filter(r => r.status === '配信済み' || r.status === '配信予約').filter(r => { const k = keyOf(r); if(seen[k]) return false; seen[k] = 1; return true; }).map(r => ({
+    channel: r.channel || 'KASIKAメール', id: keyOf(r), sendAt: r.sendAt, name: r.name, subject: r.subject || '', target: r.target, status: r.status,
     delivered: r.delivered, opened: r.opened, openRate: r.openRate, clicked: r.clicked, clickRate: r.clickRate, cv: r.cv, url: r.url
   }));
 }
@@ -254,8 +255,10 @@ async function syncSheet(opts){
   const say = opts.progress || function(){};
   const call = async payload => { const r = await fetch(opts.url, { method:'POST', body: JSON.stringify(Object.assign({ key: opts.key }, payload)) }); return r.json(); };
   const thisYear = new Date().getFullYear();
+  // yearsMode:'this'=今年のみ / 'auto'=今年のみ(1月だけは前年分も) / 'all'=すべての年
+  const sel = opts.yearsMode === 'this' ? [thisYear] : opts.yearsMode === 'auto' ? (new Date().getMonth() === 0 ? [thisYear, thisYear - 1] : [thisYear]) : null;
   let incoming = opts.rows;
-  if(opts.yearsMode === 'this') incoming = incoming.filter(r => String(r.sendAt).slice(0,4) === String(thisYear));
+  if(sel) incoming = incoming.filter(r => sel.includes(+String(r.sendAt).slice(0,4)));
   say('スプレッドシートを読み込み中…');
   let read;
   try { read = await call({ action:'read', include:[PLAN_SHEET] }); }
@@ -267,7 +270,7 @@ async function syncSheet(opts){
   const mg = mergeRecords(sheetRecords(read.sheets), incoming, now);
   const an = analyze(mg.all);
   const allYears = Array.from(new Set(mg.all.map(r => +String(r.sendAt).slice(0,4)).filter(Boolean)));
-  const years = opts.yearsMode === 'this' ? [thisYear] : allYears;
+  const years = sel || allYears;
   const inYears = r => years.includes(+String(r.sendAt).slice(0,4));
   const gradeOf = r => (an.byKey[r.channel+'|'+r.id] || {}).grade;
   const legacy = read.sheets.map(s => s.name).filter(n => /^\d{4}年$/.test(n) || n === '配信実績');
@@ -283,7 +286,7 @@ async function syncSheet(opts){
   say('書き込み中…(件数が多い初回は1〜3分かかります。このまま待ってください)');
   const sheets = buildSheets(mg.all, an, years);
   if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS, mg.all)); }
-  const deleteSheets = legacy.filter(n => n === '配信実績' ? opts.yearsMode !== 'this' : years.includes(+n.slice(0,4)));
+  const deleteSheets = legacy.filter(n => n === '配信実績' ? !sel : years.includes(+n.slice(0,4)));
   const order = sheetOrder(Array.from(new Set(allYears.concat(read.sheets.map(s => +(s.name.match(/^(\d{4})年/)||[])[1]).filter(Boolean)))));
   let w;
   try { w = await call({ action:'write', allow:[PLAN_SHEET, CAL_SHEET], sheets, deleteSheets, order }); }
@@ -346,14 +349,55 @@ async function crawlKasika(progress){
   return { pages, notes, counts };
 }
 
-/* --- KASIKAの画面に出す操作パネル(ブックマークから起動) --- */
+/* --- エルメ(L Message)のURL分析を全フォルダ・全ページ読み取る(エルメの画面上で動く) ---
+   対象:配信数が200を超え、開封数・開封率が表示されているもの(「- / -」でないもの) */
+const LINE_MIN_SEND = 200;
+async function crawlLme(progress){
+  const say = progress || function(){};
+  let vm = null;
+  document.querySelectorAll('*').forEach(el => { if(!vm && el.__vue__ && el.__vue__.$data && 'url_list' in el.__vue__.$data) vm = el.__vue__; });
+  if(!vm) return { pages: [], notes: ['URL分析の一覧が見つかりませんでした。エルメの「URL分析」画面で実行してください'], counts: {} };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const waitList = async (prev, ok) => { for(let i = 0; i < 100; i++){ await sleep(200); if(vm.url_list !== prev && (!ok || ok())) { await sleep(150); return true; } } return false; };
+  const startFolder = vm.folder_id, startPage = vm.pagination ? vm.pagination.current_page : 1;
+  const seen = {}, rows = [], notes = [];
+  const toRow = u => {
+    const send = Number(u.number_send) || 0, view = Number(u.count_view), click = Number(u.user_number_click) || 0;
+    if(!(send > LINE_MIN_SEND) || isNaN(view) || view < click) return null;   // 開封数が「-」表示のものは除く
+    const at = String(u.created_at || '').replace('T',' ').slice(0,16);
+    return { isNew:'', channel:'LINE', rid: 'lme-' + u.id, status:'配信済み', name: u.name || u.url || '', subject:'', target:'LINE友だち', sendAt: at, updatedAt:'',
+      delivered: send, opened: view, openRate: Math.round(view / send * 10000) / 10000, clicked: click, clickRate: Math.round(click / send * 10000) / 10000,
+      linked: null, cv: null, url: u.url || '', targetUrl:'', csvUrl:'', memo:'' };
+  };
+  const take = () => (vm.url_list || []).forEach(u => { if(seen[u.id]) return; seen[u.id] = 1; const r = toRow(u); if(r) rows.push(r); });
+  const folders = (vm.folders || []).slice();
+  for(const f of folders){
+    say(`LINE:「${f.name}」を読み取っています…`);
+    if(vm.folder_id !== f.id){ const prev = vm.url_list; vm.chooseFolder(f.id); if(!await waitList(prev, () => vm.folder_id === f.id)){ notes.push(`「${f.name}」を読み込めませんでした`); continue; } }
+    else if(vm.pagination && vm.pagination.current_page !== 1){ const prev = vm.url_list; vm.changePage(1); await waitList(prev); }
+    take();
+    const last = vm.pagination ? vm.pagination.last_page || 1 : 1;
+    for(let pg = 2; pg <= last; pg++){
+      say(`LINE:「${f.name}」${pg}/${last}ページ目を読み取っています…`);
+      const prev = vm.url_list; vm.changePage(pg);
+      if(!await waitList(prev, () => vm.pagination.current_page === pg)){ notes.push(`「${f.name}」の${pg}ページ目を読み込めませんでした`); break; }
+      take();
+    }
+  }
+  // 元の表示に戻す
+  try { if(vm.folder_id !== startFolder){ const prev = vm.url_list; vm.chooseFolder(startFolder); await waitList(prev); } if(startPage > 1){ vm.changePage(startPage); } } catch(e){}
+  return { pages: rows.length ? [{ channel:'LINE', page:'LINE', rows }] : [], notes, counts: { LINE: rows.length } };
+}
+
+/* --- KASIKA・エルメの画面に出す操作パネル(ブックマークから起動) --- */
 function startOnKasika(cfg){
-  if(!/kasika\.io$/.test(location.hostname)){ alert('KASIKAにログインした画面で実行してください。'); return; }
+  const isLme = /(^|\.)lme\.jp$/.test(location.hostname);
+  if(!isLme && !/kasika\.io$/.test(location.hostname)){ alert('KASIKA、またはエルメ(L Message)のURL分析の画面で実行してください。'); return; }
   const old = document.getElementById('kasika-excel-box'); if(old) old.remove();
   const box = document.createElement('div');
   box.id = 'kasika-excel-box';
   box.style.cssText = 'position:fixed;z-index:99999;top:16px;right:16px;width:380px;background:#232323;color:#fff;padding:16px 20px;font:14px/1.6 "Yu Gothic",sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.35)';
-  box.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>KASIKA → 配信実績</b><span data-x style="cursor:pointer;font-size:18px;line-height:1">×</span></div><div data-msg style="font-size:13px;white-space:pre-wrap"></div><div data-btns style="display:grid;gap:8px;margin-top:10px"></div>';
+  box.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>' + (isLme ? 'LINE(エルメ)' : 'KASIKA') + ' → 配信実績</b><span data-x style="cursor:pointer;font-size:18px;line-height:1">×</span></div><div data-msg style="font-size:13px;white-space:pre-wrap"></div><div data-btns style="display:grid;gap:8px;margin-top:10px"></div>';
   document.body.appendChild(box);
   const msg = box.querySelector('[data-msg]'), btns = box.querySelector('[data-btns]');
   box.querySelector('[data-x]').onclick = () => box.remove();
@@ -362,7 +406,8 @@ function startOnKasika(cfg){
     b.style.cssText = `font:bold 14px "Yu Gothic",sans-serif;padding:9px 12px;border:${primary ? '0' : '1px solid #AD8A5C'};background:${primary ? '#AD8A5C' : 'transparent'};color:#fff;cursor:pointer;text-align:center`;
     b.onclick = fn; btns.appendChild(b); return b; };
   let crawled = null;
-  const getData = async () => { if(!crawled) crawled = await crawlKasika(say); return crawled; };
+  const getData = async () => { if(!crawled) crawled = isLme ? await crawlLme(say) : await crawlKasika(say); return crawled; };
+  const countText = d => isLme ? `LINE ${d.counts.LINE || 0}件(配信数${LINE_MIN_SEND}超・開封数ありのもの)` : `メルマガ ${d.counts['メルマガ'] || 0}件・SMS ${d.counts['SMS'] || 0}件`;
   const lock = on => btns.querySelectorAll('button').forEach(b => { b.disabled = on; b.style.opacity = on ? .4 : 1; });
   const thisYear = new Date().getFullYear();
   const canSync = cfg && cfg.url && cfg.key;
@@ -372,7 +417,7 @@ function startOnKasika(cfg){
       const d = await getData();
       const rows = toSyncRows(d.pages.flatMap(p => p.rows));
       if(!rows.length){ say('転記できる配信が見つかりませんでした。' + d.notes.join(' / ')); return; }
-      say(`メルマガ ${d.counts['メルマガ'] || 0}件・SMS ${d.counts['SMS'] || 0}件を読み取りました。`);
+      say(`${countText(d)}を読み取りました。`);
       const res = await syncSheet({ url: cfg.url, key: cfg.key, rows, yearsMode: mode, progress: say });
       say(syncSummaryText(res) + (d.notes.length ? '\n(' + d.notes.join(' / ') + ')' : ''));
     } catch(e){ say('エラー:' + e.message); }
@@ -391,7 +436,7 @@ function startOnKasika(cfg){
       const d = await getData();
       const all = d.pages.reduce((s,p) => s + p.rows.length, 0);
       if(!all){ say('配信を読み取れませんでした。' + d.notes.join(' / ')); return; }
-      say(`メルマガ ${d.counts['メルマガ'] || 0}件・SMS ${d.counts['SMS'] || 0}件を読み取りました。下のボタンでツールを開きます。`);
+      say(`${countText(d)}を読み取りました。下のボタンでツールを開きます。`);
       const a = document.createElement('a');
       a.href = cfg.tool + '#kasika=' + encodeURIComponent(JSON.stringify({ v:5, at: Date.now(), noAuto: true, pages: d.pages }));
       a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'ツールを開いて取り込む';
@@ -407,11 +452,13 @@ const CH_ORDER = ['KASIKAメール','SMS','LINE'];
 const SHEET_COLS = {
   'KASIKAメール': ['sendAt','name','subject','target','status','delivered','opened','openRate','clicked','clickRate','cv','grade','rsv','memo','url','id','fetched'],
   'SMS':          ['sendAt','name','target','status','delivered','clicked','clickRate','grade','rsv','memo','url','id','fetched'],
-  'LINE':         ['sendAt','name','target','status','delivered','opened','openRate','clicked','clickRate','grade','rsv','memo','url','id','fetched']
+  'LINE':         ['sendAt','name','status','delivered','opened','openRate','clicked','clickRate','grade','rsv','memo','url','id','fetched']
 };
 const FIELD_LABEL = { sendAt:'配信日時', channel:'チャネル', name:'配信名', subject:'件名', target:'対象', status:'ステータス', delivered:'送信数', opened:'開封数',
   openRate:'開封率', clicked:'クリック数', clickRate:'クリック率', cv:'コンバージョン', grade:'評価', comment:'分析コメント(改善案・参考)', rsv:'予約数', memo:'メモ', url:'リンク', id:'取得元ID', fetched:'最終取得' };
-const LABEL_FIELD = Object.fromEntries(Object.entries(FIELD_LABEL).map(([k,v]) => [v,k]));
+// チャネルごとの見出し名の違い(LINEはユニーククリック)
+const CH_FIELD_LABEL = { 'LINE': { clicked:'ユニーククリック数', clickRate:'ユニーククリック率', sendAt:'登録日時' } };
+const LABEL_FIELD = Object.fromEntries(Object.entries(FIELD_LABEL).map(([k,v]) => [v,k]).concat([['ユニーククリック数','clicked'],['ユニーククリック率','clickRate'],['登録日時','sendAt']]));
 const FIELD_WIDTH = { sendAt:150, name:240, subject:300, target:110, status:80, delivered:60, opened:60, openRate:65, clicked:70, clickRate:70, cv:90, grade:80, rsv:60, memo:220, url:200, id:120, fetched:120 };
 const STYLES = {
   head:{ bold:true, color:'#ffffff', bg:'#232323' }, manualHead:{ bold:true, color:'#ffffff', bg:'#AD8A5C' },
@@ -565,7 +612,7 @@ function cellVal(f, r, an){
 function channelSheet(year, ch, rows, an){
   const cols = SHEET_COLS[ch];
   const sorted = rows.slice().sort((a,b) => String(b.sendAt).localeCompare(String(a.sendAt)));
-  const values = [cols.map(f => FIELD_LABEL[f])].concat(sorted.map(r => cols.map(f => cellVal(f, r, an))));
+  const values = [cols.map(f => (CH_FIELD_LABEL[ch] || {})[f] || FIELD_LABEL[f])].concat(sorted.map(r => cols.map(f => cellVal(f, r, an))));
   const cellStyles = [];
   cols.forEach((f,c) => { if(f === 'rsv' || f === 'memo') cellStyles.push([0, c, 'manualHead']); });
   const gc = cols.indexOf('grade');
@@ -633,13 +680,14 @@ const PLAN_LABEL = { eventDate:'開催日', name:'イベント名(配信名)', p
 // 以前の見出し名(読み込み時だけ使う)
 const PLAN_OLD_LABEL = { '予定日':'planDate', '配信名(案)':'name', '件名(案)':'oldSubject', '目的':'oldPurpose', '担当':'oldOwner' };
 const PLAN_WIDTH = { eventDate:110, name:260, planDate:120, planTime:60, channel:70, target:210, memo:220, state:130, check:440, delivered:70, openRate:75, clickRate:80, grade:80, linkId:120, tplKey:170 };
-const PLAN_TARGET_OPTIONS = ['新規（見込み顧客）','全員（見込み顧客、OB顧客）','OB（OB顧客）','SMS見込み（ショートメールで案内）'];
+const PLAN_TARGET_OPTIONS = ['新規（見込み顧客）','全員（見込み顧客、OB顧客）','OB（OB顧客）','SMS見込み（ショートメールで案内）','LINE（友だち）'];
 // 対象の色(以前のチェックシートと同じ配色)
 const PLAN_TARGET_COLORS = [
   { text:'新規（見込み顧客）', bg:'#CFE5FB', color:'#1F4E79' },
   { text:'全員（見込み顧客、OB顧客）', bg:'#FBD7C4', color:'#7A3410' },
   { text:'OB（OB顧客）', bg:'#E6D7F4', color:'#4B2A6B' },
-  { text:'SMS見込み（ショートメールで案内）', bg:'#D6EFC4', color:'#2F5A1A' }
+  { text:'SMS見込み（ショートメールで案内）', bg:'#D6EFC4', color:'#2F5A1A' },
+  { text:'LINE（友だち）', bg:'#C8F0D8', color:'#0B6B35' }
 ];
 // 毎年必ず入れる定例配信(今月から12か月先までを自動で予定に入れる)。d があるものは日付も入れる
 const PLAN_TEMPLATES = [
@@ -1006,7 +1054,7 @@ function parsePrev(buf){
 
 function merged(){
   const map = new Map();
-  for(const p of state.pages) for(const r of p.rows) if(!map.has(cidOf(r.url))) map.set(cidOf(r.url), { channel:'KASIKAメール', ...r });
+  for(const p of state.pages) for(const r of p.rows) if(!map.has(keyOf(r))) map.set(keyOf(r), { channel:'KASIKAメール', ...r });
   const list = Array.from(map.values());
   for(const r of list){
     if(state.prev){
