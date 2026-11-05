@@ -297,7 +297,7 @@ async function syncSheet(opts){
   if(opts.dryRun) return res;
   say('書き込み中…(件数が多い初回は1〜3分かかります。このまま待ってください)');
   const sheets = buildSheets(mg.all, an, years, ga, gaOrphans);
-  if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS, mg.all), buildGuideSheet()); }
+  if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all, ga); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS, mg.all), buildGuideSheet()); }
   const deleteSheets = legacy.filter(n => n === '配信実績' ? !sel : years.includes(+n.slice(0,4)));
   const order = sheetOrder(Array.from(new Set(allYears.concat(read.sheets.map(s => +(s.name.match(/^(\d{4})年/)||[])[1]).filter(Boolean)))));
   let w;
@@ -1265,7 +1265,7 @@ function buildCalendarSheet(rows, all){
   rows.forEach(x => {
     const st = x.v.state;
     if(st === '配信済み') return;
-    if(st === '配信済み(手入力)'){ const d0 = parsePlanDate_(x.v.planDate); if(d0) add(d0, '✓' + (x.v.name || '') + chMark(x.p.ch), 'done'); return; }
+    if(/^配信済み\(/.test(st)){ const d0 = parsePlanDate_(x.v.planDate); if(d0) add(d0, '✓' + (x.v.name || '') + chMark(x.p.ch), 'done'); return; }
     if(st === '中止' || /中止/.test(x.v.memo || x.p.memo || '')) return;   // 中止にした予定はカレンダーに出さない
     const kind = st === '配信予約' ? 'resv' : 'plan';
     const text = (x.v.name || '(名称未定)') + chMark(x.p.ch);
@@ -1318,7 +1318,7 @@ function buildCalendarSheet(rows, all){
   });
   return { name: CAL_SHEET, values: out, styles, rowStyles, cellStyles, wrapCols: [0,1,2,3,4,5,6], widths: [150,150,150,150,150,150,150], frozenRows: 0 };
 }
-function buildPlanSheet(plans, lk, an, all){
+function buildPlanSheet(plans, lk, an, all, ga){
   const today = new Date(); today.setHours(0,0,0,0);
   const rows = plans.map(p => {
     const r = lk.links.get(p);
@@ -1340,8 +1340,12 @@ function buildPlanSheet(plans, lk, an, all){
       // LINEの予約は送ると予約一覧から消える。予約とひも付いていて配信日時を過ぎたものは「配信済み」とみなす
       const at = p.date ? new Date(p.date.getFullYear(), p.date.getMonth(), p.date.getDate(), p.time ? +p.time.slice(0,2) : 23, p.time ? +p.time.slice(3,5) : 59) : null;
       const lineSent = /^lme-b-/.test(p.linkId) && at && at < new Date();
+      // 名札付きリンクで、その配信日にサイトへの訪問がGA4に記録されていれば、送ったことが確実なので「配信済み」とする
+      const ymd = p.date ? `${p.date.getFullYear()}-${('0'+(p.date.getMonth()+1)).slice(-2)}-${('0'+p.date.getDate()).slice(-2)}` : '';
+      const gaHit = ga && ymd && at && at < new Date() ? ga.map[(p.ch || 'KASIKAメール') + '|' + ymd] : null;
       v.state = /中止/.test(p.memo) ? '中止'
         : lineSent ? '配信済み'
+        : gaHit ? '配信済み(GA4で確認)'
         : /配信済|送信済/.test(p.memo) ? '配信済み(手入力)'
         : p.date ? (p.date < today ? '要確認(予定日を過ぎています)' : '予定')
         : p.month ? (monthEnd < today ? '要確認(配信月を過ぎています)' : `予定(${p.month.m}月中・日付未定)`)
@@ -1349,6 +1353,7 @@ function buildPlanSheet(plans, lk, an, all){
       if(v.state === '中止') v.check = '';
       v.linkId = lineSent ? p.linkId : ''; v.delivered = lineSent ? (p.prevDelivered || '') : ''; v.openRate = ''; v.clickRate = ''; v.grade = '';
       if(v.state !== '中止' && !/^配信済み/.test(v.state)) v.check = planCheck(p, an, all, plans, null);
+      if(gaHit && v.state === '配信済み(GA4で確認)'){ const cv = gaHit.req + gaHit.oh + gaHit.mh; v.check = `ホームページ(GA4):訪問 ${gaHit.visits}件` + (cv ? `・成果 ${cv}件` : ''); }
     }
     v.tplKey = p.tplKey || '';
     return { p, v, done: v.state === '配信済み' };
