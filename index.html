@@ -269,6 +269,7 @@ async function syncSheet(opts){
   const t = new Date();
   const now = `${t.getFullYear()}/${('0'+(t.getMonth()+1)).slice(-2)}/${('0'+t.getDate()).slice(-2)} ${('0'+t.getHours()).slice(-2)}:${('0'+t.getMinutes()).slice(-2)}`;
   const mg = mergeRecords(sheetRecords(read.sheets), incoming, now);
+  mg.all = dropStaleReservations(mg.all, incoming, sel);
   const an = analyze(mg.all);
   const allYears = Array.from(new Set(mg.all.map(r => +String(r.sendAt).slice(0,4)).filter(Boolean)));
   const years = sel || allYears;
@@ -685,6 +686,12 @@ function sameVal(a, b){
   if(typeof na === 'number' || typeof nb === 'number') return Math.abs(Number(na || 0) - Number(nb || 0)) < 0.00006 && String(na === '' ) === String(nb === '');
   return String(na).trim() === String(nb).trim();
 }
+// 今回読み取ったチャネルで、一覧に見当たらなくなった「配信予約」は古い情報なので外す
+// (予約を作り直した・削除した場合に、古い予約が残って配信予定が「配信予約」のまま止まるのを防ぐ)
+function dropStaleReservations(all, incoming, years){
+  const chs = new Set(incoming.filter(r => !r.transient).map(r => r.channel));
+  return all.filter(r => !(r.status === '配信予約' && !r._in && chs.has(r.channel) && (!years || years.includes(+String(r.sendAt).slice(0,4)))));
+}
 function mergeRecords(existing, incoming, now){
   const map = new Map();
   existing.forEach(r => map.set(r.channel + '|' + r.id, r));
@@ -692,7 +699,7 @@ function mergeRecords(existing, incoming, now){
   let unchanged = 0;
   incoming.forEach(r => {
     const k = r.channel + '|' + r.id, e = map.get(k);
-    const rec = Object.assign({}, r, { rsv: e ? e.rsv : '', memo: e ? e.memo : '', fetched: now });
+    const rec = Object.assign({}, r, { rsv: e ? e.rsv : '', memo: e ? e.memo : '', fetched: now, _in: true });
     if(r.transient){ map.set(k, rec); return; }   // LINEの配信予約は表に残さない(数えない)
     if(!e) added.push(rec);
     else if(CMP.some(f => !sameVal(e[f], r[f]))) updated.push({ rec, before: e });
@@ -1049,7 +1056,7 @@ function parsePlans(sheets){
   for(let r = 1; r < sh.values.length; r++){
     const row = sh.values[r], g = k => idx[k] === undefined ? '' : String(row[idx[k]] ?? '').trim();
     const p = {}; PLAN_MANUAL.forEach(k => p[k] = g(k));
-    p.linkId = g('linkId'); p.tplKey = g('tplKey');
+    p.linkId = g('linkId'); p.tplKey = g('tplKey'); p.prevDelivered = g('delivered');
     const olds = [['件名','oldSubject'],['目的','oldPurpose'],['担当','oldOwner']].map(([l,k]) => g(k) ? `${l}:${g(k)}` : '').filter(Boolean);
     if(olds.length) p.memo = [p.memo, olds.join(' / ')].filter(Boolean).join(' / ');   // 削除した列の内容はメモへ移す
     if(/^■/.test(p.planDate) && (!p.name || /^\d+件$/.test(p.name))) continue;   // 月の区切り行
@@ -1173,6 +1180,7 @@ function buildGuideSheet(){
   t('', '配信済み', '送信済み。送信数・開封率・クリック率・評価が入り、灰色になって下にまとまります');
   t('', '要確認', '予定日(定例は予定の月)を過ぎても配信が見つからないもの。送った場合は名前の違いを、送らない場合はメモに「中止」を');
   t('', '中止', 'メモに「中止」と書いたもの');
+  t('', '配信済み(手入力)', 'メモに「配信済」と書いたもの。URLのないLINEなど、実績と自動でひも付かない配信を完了にするときに使います');
   t('', '', '');
   t('section', '■ 定例配信(毎年自動で予定に入ります)');
   t('', '休暇・挨拶', `新年のご挨拶(1/1)、ＧＷ休暇(4/25)、夏季休暇(8/5)、年末年始休暇(12/25)`);
@@ -1257,6 +1265,7 @@ function buildCalendarSheet(rows, all){
   rows.forEach(x => {
     const st = x.v.state;
     if(st === '配信済み') return;
+    if(st === '配信済み(手入力)'){ const d0 = parsePlanDate_(x.v.planDate); if(d0) add(d0, '✓' + (x.v.name || '') + chMark(x.p.ch), 'done'); return; }
     if(st === '中止' || /中止/.test(x.v.memo || x.p.memo || '')) return;   // 中止にした予定はカレンダーに出さない
     const kind = st === '配信予約' ? 'resv' : 'plan';
     const text = (x.v.name || '(名称未定)') + chMark(x.p.ch);
@@ -1328,13 +1337,18 @@ function buildPlanSheet(plans, lk, an, all){
       if(!v.planTime) v.planTime = String(r.sendAt).slice(11,16);
     } else {
       const monthEnd = p.month ? new Date(p.month.y, p.month.m, 0) : null;
+      // LINEの予約は送ると予約一覧から消える。予約とひも付いていて配信日時を過ぎたものは「配信済み」とみなす
+      const at = p.date ? new Date(p.date.getFullYear(), p.date.getMonth(), p.date.getDate(), p.time ? +p.time.slice(0,2) : 23, p.time ? +p.time.slice(3,5) : 59) : null;
+      const lineSent = /^lme-b-/.test(p.linkId) && at && at < new Date();
       v.state = /中止/.test(p.memo) ? '中止'
+        : lineSent ? '配信済み'
+        : /配信済|送信済/.test(p.memo) ? '配信済み(手入力)'
         : p.date ? (p.date < today ? '要確認(予定日を過ぎています)' : '予定')
         : p.month ? (monthEnd < today ? '要確認(配信月を過ぎています)' : `予定(${p.month.m}月中・日付未定)`)
         : '予定(日付未定)';
       if(v.state === '中止') v.check = '';
-      v.linkId = ''; v.delivered = ''; v.openRate = ''; v.clickRate = ''; v.grade = '';
-      if(v.state !== '中止') v.check = planCheck(p, an, all, plans, null);
+      v.linkId = lineSent ? p.linkId : ''; v.delivered = lineSent ? (p.prevDelivered || '') : ''; v.openRate = ''; v.clickRate = ''; v.grade = '';
+      if(v.state !== '中止' && !/^配信済み/.test(v.state)) v.check = planCheck(p, an, all, plans, null);
     }
     v.tplKey = p.tplKey || '';
     return { p, v, done: v.state === '配信済み' };
@@ -1343,7 +1357,7 @@ function buildPlanSheet(plans, lk, an, all){
   // 同じ月の中では、配信日が入っている予定を日付順に先に並べ、日付未定(〇月中)の予定はその月の最後に置く
   const sortT = p => p.date ? p.date.getTime() + (p.time ? (+p.time.slice(0,2) * 60 + +p.time.slice(3,5)) * 60000 : 0)
     : p.month ? new Date(p.month.y, p.month.m, 0, 23, 59, 59).getTime() : 9e15;
-  rows.forEach(x => { x.done = x.v.state === '配信済み' || x.v.state === '中止'; });
+  rows.forEach(x => { x.done = /^配信済み/.test(x.v.state) || x.v.state === '中止'; });
   const open = rows.filter(x => !x.done).sort((a,b) => sortT(a.p) - sortT(b.p));
   const done = rows.filter(x => x.done).sort((a,b) => sortT(b.p) - sortT(a.p));
   // 月ごとに区切り行を入れる(まだ送っていない予定 → 配信済み・中止 の順)
@@ -1369,7 +1383,7 @@ function buildPlanSheet(plans, lk, an, all){
   items.forEach((x,i) => {
     if(x.sep) return;
     const st = x.v.state;
-    if(st === '配信済み' || st === '中止') cellStyles.push([i+1, sc, 'stDone']); else if(st === '配信予約') cellStyles.push([i+1, sc, 'stResv']); else if(/要確認/.test(st)) cellStyles.push([i+1, sc, 'stWarn']);
+    if(/^配信済み/.test(st) || st === '中止') cellStyles.push([i+1, sc, 'stDone']); else if(st === '配信予約') cellStyles.push([i+1, sc, 'stResv']); else if(/要確認/.test(st)) cellStyles.push([i+1, sc, 'stWarn']);
     if(/^◎/.test(x.v.grade)) cellStyles.push([i+1, gc, 'goodMark']); if(/^△/.test(x.v.grade)) cellStyles.push([i+1, gc, 'badMark']);
   });
   const nf = {}; nf[PLAN_COLS.indexOf('planDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('eventDate')] = 'yyyy/mm/dd(ddd)'; nf[PLAN_COLS.indexOf('planTime')] = 'hh:mm';
