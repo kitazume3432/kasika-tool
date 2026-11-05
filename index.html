@@ -280,12 +280,22 @@ async function syncSheet(opts){
   const plans = planOK ? parsePlans(read.sheets) : [];
   const tplAdded = planOK ? ensureTemplates(plans) : [];
   const lk = linkPlans(plans, mg.all);
+  // GA4(Apps Script ver.12以降)
+  let ga = null, gaNote = '';
+  if((read.version || 0) >= 12){
+    say('Googleアナリティクスを読み込み中…');
+    try { const g = await call({ action:'ga' }); if(g.ok) ga = gaBuild(g.rows); else gaNote = 'GA4:' + (g.error || '取得できませんでした'); }
+    catch(e){ gaNote = 'GA4:取得できませんでした'; }
+  }
+  const gaOrphans = ga ? gaAttach(mg.all, ga, lk) : [];
+  if(ga) gaComment(mg.all, an);
   const planInfo = { total: plans.length, linked: lk.links.size, fresh: lk.fresh.map(x => ({ plan: x.p.name || x.p.subject, actual: x.r.name, sendAt: x.r.sendAt })), hasSheet: read.sheets.some(s => s.name === PLAN_SHEET), supported: planOK, full: planFull, tplAdded: tplAdded.length };
   const res = { ok:true, dryRun: !!opts.dryRun, time: t, years: years.slice().sort((a,b)=>b-a), updated: mg.updated, added: mg.added, unchanged: mg.unchanged,
-    good: mg.all.filter(r => inYears(r) && gradeOf(r) === '◎ 良い').length, bad: mg.all.filter(r => inYears(r) && gradeOf(r) === '△ 要改善').length, legacy, plan: planInfo };
+    good: mg.all.filter(r => inYears(r) && gradeOf(r) === '◎ 良い').length, bad: mg.all.filter(r => inYears(r) && gradeOf(r) === '△ 要改善').length, legacy, plan: planInfo,
+    ga: ga ? { days: Object.keys(ga.map).length, matched: mg.all.filter(r => r.ga && inYears(r)).length } : null, gaNote };
   if(opts.dryRun) return res;
   say('書き込み中…(件数が多い初回は1〜3分かかります。このまま待ってください)');
-  const sheets = buildSheets(mg.all, an, years);
+  const sheets = buildSheets(mg.all, an, years, ga, gaOrphans);
   if(planOK){ const ps = buildPlanSheet(plans, lk, an, mg.all); sheets.unshift(ps, buildCalendarSheet(LAST_PLAN_ROWS, mg.all), buildGuideSheet()); }
   const deleteSheets = legacy.filter(n => n === '配信実績' ? !sel : years.includes(+n.slice(0,4)));
   const order = sheetOrder(Array.from(new Set(allYears.concat(read.sheets.map(s => +(s.name.match(/^(\d{4})年/)||[])[1]).filter(Boolean)))));
@@ -308,6 +318,8 @@ function syncResultHtml(res){
   if(!res.plan.supported) h += '<br><span class="err">「配信予定」タブを使うには、スプレッドシートのApps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください(実績の転記は通常どおり行っています)。</span>';
   else h += `<br>配信予定:${res.plan.total}件(実績とひも付け ${res.plan.linked}件${res.plan.fresh.length ? '、今回新たに ' + res.plan.fresh.length + '件' : ''}${res.plan.tplAdded ? '、定例配信を ' + res.plan.tplAdded + '件追加' : ''})${res.plan.hasSheet ? '' : ' ※「配信予定」タブを作成' + (res.dryRun ? 'します' : 'しました')}`;
   if(res.plan.fresh.length) h += '<h3>予定と実績のひも付け</h3><ul>' + res.plan.fresh.map(f => `<li>予定「${esc(f.plan)}」→ ${esc(f.sendAt)} ${esc(f.actual)}</li>`).join('') + '</ul>';
+  if(res.ga) h += `<br>Googleアナリティクス:配信日 ${res.ga.days}日分を取得、${res.ga.matched}件の配信にひも付け`;
+  if(res.gaNote) h += `<br><span class="err">${esc(res.gaNote)}</span>`;
   if(res.legacy.length) h += `<br>以前の形式のシート(${res.legacy.map(esc).join('・')})は、新しい形式に移して削除${res.dryRun ? 'します' : 'しました'}。`;
   const nums = r => [r.delivered, r.opened, pct(r.openRate), r.clicked, pct(r.clickRate)].map(x => x ?? '-').join(' / ');
   if(res.updated.length) h += '<h3>数字を更新</h3><ul>' + res.updated.slice(0,30).map(u => `<li>${esc(u.rec.channel)} ${esc(u.rec.name)}<br><small>${nums(u.before)} → ${nums(u.rec)}</small></li>`).join('') + (res.updated.length > 30 ? `<li>ほか${res.updated.length-30}件</li>` : '') + '</ul>';
@@ -622,16 +634,16 @@ const CH_TAB = { 'KASIKAメール':'メール', 'SMS':'SMS', 'LINE':'LINE' };
 const TAB_CH = { 'メール':'KASIKAメール', 'SMS':'SMS', 'LINE':'LINE' };
 const CH_ORDER = ['KASIKAメール','SMS','LINE'];
 const SHEET_COLS = {
-  'KASIKAメール': ['sendAt','name','subject','target','status','delivered','opened','openRate','clicked','clickRate','cv','grade','rsv','memo','url','id','fetched'],
-  'SMS':          ['sendAt','name','target','status','delivered','clicked','clickRate','grade','rsv','memo','url','id','fetched'],
-  'LINE':         ['sendAt','name','status','delivered','opened','openRate','clicked','clickRate','grade','rsv','memo','url','id','fetched']
+  'KASIKAメール': ['sendAt','name','subject','target','status','delivered','opened','openRate','clicked','clickRate','cv','visits','cvReq','cvOh','cvMh','grade','rsv','memo','url','id','fetched'],
+  'SMS':          ['sendAt','name','target','status','delivered','clicked','clickRate','visits','cvReq','cvOh','cvMh','grade','rsv','memo','url','id','fetched'],
+  'LINE':         ['sendAt','name','status','delivered','opened','openRate','clicked','clickRate','visits','cvReq','cvOh','cvMh','grade','rsv','memo','url','id','fetched']
 };
 const FIELD_LABEL = { sendAt:'配信日時', channel:'チャネル', name:'配信名', subject:'件名', target:'対象', status:'ステータス', delivered:'送信数', opened:'開封数',
-  openRate:'開封率', clicked:'クリック数', clickRate:'クリック率', cv:'コンバージョン', grade:'評価', comment:'分析コメント(改善案・参考)', rsv:'予約数', memo:'メモ', url:'リンク', id:'取得元ID', fetched:'最終取得' };
+  openRate:'開封率', clicked:'クリック数', clickRate:'クリック率', cv:'コンバージョン', grade:'評価', comment:'分析コメント(改善案・参考)', visits:'サイト訪問(GA4)', cvReq:'資料請求', cvOh:'見学会予約', cvMh:'MH予約', rsv:'予約数', memo:'メモ', url:'リンク', id:'取得元ID', fetched:'最終取得' };
 // チャネルごとの見出し名の違い(LINEはユニーククリック)
 const CH_FIELD_LABEL = { 'LINE': { clicked:'ユニーククリック数', clickRate:'ユニーククリック率', sendAt:'登録日時' } };
 const LABEL_FIELD = Object.fromEntries(Object.entries(FIELD_LABEL).map(([k,v]) => [v,k]).concat([['ユニーククリック数','clicked'],['ユニーククリック率','clickRate'],['登録日時','sendAt']]));
-const FIELD_WIDTH = { sendAt:150, name:240, subject:300, target:110, status:80, delivered:60, opened:60, openRate:65, clicked:70, clickRate:70, cv:90, grade:80, rsv:60, memo:220, url:200, id:120, fetched:120 };
+const FIELD_WIDTH = { sendAt:150, name:240, subject:300, target:110, status:80, delivered:60, opened:60, openRate:65, clicked:70, clickRate:70, cv:90, visits:85, cvReq:65, cvOh:75, cvMh:65, grade:80, rsv:60, memo:220, url:200, id:120, fetched:120 };
 const STYLES = {
   head:{ bold:true, color:'#ffffff', bg:'#232323' }, manualHead:{ bold:true, color:'#ffffff', bg:'#AD8A5C' },
   title:{ bold:true, size:14 }, section:{ bold:true, color:'#AD8A5C', size:12 },
@@ -775,7 +787,69 @@ function analyze(records){
   return { byKey, recs, stats, best };
 }
 /* --- シートの中身を作る --- */
+/* ===== Googleアナリティクス(GA4):配信日ごとのサイト訪問・成果を配信実績にひも付ける =====
+   リンクの名札(UTM)のルール:utm_campaign=配信日(YYYYMMDD)
+     LINE      utm_source=line   utm_medium=post
+     KASIKAメール utm_source=kasika utm_medium=dm(参照元が kasika20261002 のように日付入りでも可)
+     SMS       utm_source=sms    utm_medium=sms */
+const GA_EVENTS = { '資料請求・お問い合わせ完了':'req', '見学予約完了_KASIKA':'oh', 'モデルハウス来場予約完了':'mh' };
+function gaEventKind_(name){
+  if(GA_EVENTS[name]) return GA_EVENTS[name];
+  if(/モデルハウス/.test(name)) return 'mh';
+  if(/見学/.test(name)) return 'oh';
+  if(/資料|問い合/.test(name)) return 'req';
+  return null;
+}
+function gaClassify_(src, med, camp){
+  src = String(src || '').toLowerCase(); med = String(med || '').toLowerCase(); camp = String(camp || '');
+  let date = (camp.match(/^(\d{4})(\d{2})(\d{2})$/) || src.match(/(\d{4})(\d{2})(\d{2})$/) || [])
+  const ymd = date.length ? `${date[1]}-${date[2]}-${date[3]}` : null;
+  let ch = null;
+  if(src === 'sms' || med === 'sms') ch = 'SMS';
+  else if(/^kasika/.test(src)) ch = 'KASIKAメール';
+  else if(src === 'line' || ((src === '(not set)' || /lme/.test(src)) && med === 'post')) ch = 'LINE';
+  if(ch === 'LINE' && med && med !== 'post') return null;    // リッチメニュー・ステップ配信などは配信ではないので除く
+  return ch ? { ch, ymd } : null;
+}
+// 分析コメントに、サイト訪問と成果を書き足す
+function gaComment(all, an){
+  all.forEach(r => {
+    if(!r.ga) return;
+    const b = an.byKey[r.channel + '|' + r.id]; if(!b || !b.comment) return;
+    const cv = r.ga.req + r.ga.oh + r.ga.mh;
+    const line = `・ホームページ(GA4):訪問 ${r.ga.visits}件` + (cv ? ` → 成果 ${cv}件(資料請求 ${r.ga.req}・見学会予約 ${r.ga.oh}・MH予約 ${r.ga.mh})` : '(予約・資料請求 0件)');
+    const parts = b.comment.split('\n'); parts.splice(1, 0, line); b.comment = parts.join('\n');
+  });
+}
+function gaBuild(gaRows){
+  const map = {}, undated = {};
+  (gaRows || []).forEach(r => {
+    const c = gaClassify_(r.src, r.med, r.camp);
+    if(!c) return;
+    const box = c.ymd ? (map[c.ch + '|' + c.ymd] = map[c.ch + '|' + c.ymd] || { ch: c.ch, ymd: c.ymd, visits:0, users:0, req:0, oh:0, mh:0 })
+                      : (undated[c.ch] = undated[c.ch] || { ch: c.ch, visits:0, users:0, req:0, oh:0, mh:0 });
+    box.visits += r.sessions || 0; box.users += r.users || 0;
+    Object.keys(r.ev || {}).forEach(n => { const k = gaEventKind_(n); if(k) box[k] += r.ev[n]; });
+  });
+  return { map, undated };
+}
+// 配信実績の行に、同じチャネル・同じ配信日のGA4の数字を付ける(同じ日に複数あるときは送信数が一番多い配信に付ける)
+function gaAttach(all, ga, lk){
+  const planDate = {};
+  if(lk) lk.links.forEach((r, p) => { if(p.date) planDate[r.id] = p.date; });
+  const ymdOf = r => { const d = planDate[r.id] || toDate_(r.sendAt); return d ? `${d.getFullYear()}-${('0'+(d.getMonth()+1)).slice(-2)}-${('0'+d.getDate()).slice(-2)}` : null; };
+  const groups = {};
+  all.forEach(r => { delete r.ga; if(r.status !== '配信済み' || r.transient) return; const k = r.channel + '|' + ymdOf(r); (groups[k] = groups[k] || []).push(r); });
+  const used = {};
+  Object.keys(groups).forEach(k => {
+    const g = ga.map[k]; if(!g) return;
+    const top = groups[k].slice().sort((a,b) => (b.delivered || 0) - (a.delivered || 0))[0];
+    top.ga = g; used[k] = 1;
+  });
+  return Object.keys(ga.map).filter(k => !used[k]).map(k => ga.map[k]);   // 配信実績が見つからなかった日
+}
 function cellVal(f, r, an){
+  if(f === 'visits' || f === 'cvReq' || f === 'cvOh' || f === 'cvMh'){ const k = { visits:'visits', cvReq:'req', cvOh:'oh', cvMh:'mh' }[f]; return r.ga ? r.ga[k] : ''; }
   if(f === 'grade') return (an.byKey[r.channel + '|' + r.id] || {}).grade || '';
   if(f === 'sendAt'){ const m = String(r.sendAt).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/); return m ? `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}` : r.sendAt; }
   const v = r[f];
@@ -795,7 +869,7 @@ function channelSheet(year, ch, rows, an){
   return { name: `${year}年_${CH_TAB[ch]}`, values, styles: STYLES, rowStyles: ['head'], cellStyles, numberFormats: nf,
     widths: cols.map(f => FIELD_WIDTH[f] || 90), frozenRows: 1 };
 }
-function reportSheet(year, recs, an){
+function reportSheet(year, recs, an, ga, orphans){
   const out = [], row = (t, c) => out.push([t, c]);
   const ok = recs.filter(r => r.status === '配信済み' && r.delivered >= MIN_SENT);
   const chs = CH_ORDER.filter(c => recs.some(r => r.channel === c));
@@ -818,6 +892,28 @@ function reportSheet(year, recs, an){
   block('■ 曜日別', ['曜日','チャネル','配信件数','平均開封率','平均クリック率'], wdRows);
   const catRows = []; chs.forEach(c => { const cats = {}; ok.filter(r => r.channel === c).forEach(r => (cats[category_(r.name)] = cats[category_(r.name)] || []).push(r)); Object.keys(cats).forEach(k => catRows.push([k, c, cats[k].length, avg(cats[k],'openRate'), avg(cats[k],'clickRate')])); });
   block('■ 内容の種類別', ['種類','チャネル','配信件数','平均開封率','平均クリック率'], catRows);
+  if(ga){
+    const withGa = recs.filter(r => r.ga);
+    const sum = (a, k) => a.reduce((s,r) => s + (r.ga[k] || 0), 0);
+    row('', []);
+    row('section', ['■ ホームページへの効果(Googleアナリティクス・配信日ごと)']);
+    row('', ['リンクの名札(utm_campaign=配信日)で、配信からサイトに来た人の訪問と、資料請求・見学会予約・モデルハウス(MH)予約を数えています。']);
+    row('head', ['チャネル','計測できた配信','サイト訪問','資料請求','見学会予約','MH予約','送信1,000通あたりの成果']);
+    chs.forEach(c => { const a = withGa.filter(r => r.channel === c); if(!a.length) return;
+      const cv = sum(a,'req') + sum(a,'oh') + sum(a,'mh'), sent = a.reduce((s,r) => s + (r.delivered || 0), 0);
+      row('', [c, a.length + '件', sum(a,'visits'), sum(a,'req'), sum(a,'oh'), sum(a,'mh'), sent ? (cv / sent * 1000).toFixed(1) + '件' : '-']); });
+    const gaRows = withGa.map(r => ({ d: r.ga.ymd, c: r.channel, n: r.name, g: r.ga }))
+      .concat((orphans || []).map(o => ({ d: o.ymd, c: o.ch, n: '(この日の配信が実績に見つかりません)', g: o })))
+      .sort((a,b) => String(b.d).localeCompare(String(a.d)));
+    const und = ga.undated || {};
+    if(String(year) === String(new Date().getFullYear()) && Object.keys(und).length){
+      Object.keys(und).forEach(c => { const u = und[c]; row('', [`${c}(名札に配信日がない分・全期間)`, '', u.visits, u.req, u.oh, u.mh, '配信日が分からないため、配信ごとには分けられません']); });
+    }
+    if(gaRows.length){
+      row('head', ['配信日','チャネル','配信名','サイト訪問','資料請求','見学会予約','MH予約']);
+      gaRows.forEach(x => { const cv = x.g.req + x.g.oh + x.g.mh; row(cv ? 'good' : '', [String(x.d).slice(0,10).replace(/-/g,'/'), x.c, x.n, x.g.visits, x.g.req, x.g.oh, x.g.mh]); });
+    }
+  }
   row('', []);
   row('section', ['■ 配信ごとの評価とコメント(◎ 良い:参考ポイント / △ 要改善:改善案)']);
   row('head', ['配信日時','チャネル','配信名','開封率','クリック率','評価','分析コメント']);
@@ -829,12 +925,12 @@ function reportSheet(year, recs, an){
   return { name: `${year}年_分析`, values: out.map(([,c]) => { const a = c.slice(0,W); while(a.length < W) a.push(''); return a; }),
     styles: STYLES, rowStyles: out.map(([t]) => t || null), wrapCols: [6], widths: [150,110,260,90,90,90,460], frozenRows: 0 };
 }
-function buildSheets(all, an, years){
+function buildSheets(all, an, years, ga, gaOrphans){
   const sheets = [];
   years.forEach(y => {
     const ys = all.filter(r => !r.transient && String(r.sendAt).slice(0,4) === String(y));   // LINEの配信予約は年別タブ・分析に入れない
     CH_ORDER.forEach(ch => { const rows = ys.filter(r => r.channel === ch); if(rows.length) sheets.push(channelSheet(y, ch, rows, an)); });
-    sheets.push(reportSheet(y, ys, an));
+    sheets.push(reportSheet(y, ys, an, ga, (gaOrphans || []).filter(o => o.ymd.slice(0,4) === String(y))));
   });
   return sheets;
 }
@@ -1056,6 +1152,7 @@ function buildGuideSheet(){
   t('section', '■ 予定のかんたん入力(おすすめ)');
   t('', '1件ずつ追加', 'メニューの「配信予定」→「予定を追加(1件ずつ)」。追加後に「今すぐ最新にする」を押すと、並び替え・カレンダーにすぐ反映されます。日付はカレンダーから選べ、イベント名は過去の名前から選べます。続けて何件でも追加できます');
   t('', 'まとめて追加', 'メニューの「配信予定」→「まとめて追加(見学会・イベント)」。イベント名・開催日・配信先(メール/SMS/LINE)・告知のタイミング(21日前・14日前・7日前など)を選ぶと、告知の予定が一度に作れます。追加前に日付・時刻を直したり、不要な行を外したりできます');
+  t('', '名札付きリンク', 'メニューの「配信予定」→「名札付きリンクを作る」。メール・SMS・LINEに載せるホームページのリンクは、必ずここで作ったリンクを貼ってください。どの配信からサイトに来て、予約・資料請求をしたかが分かるようになります');
   t('', 'メニューが出ないとき', 'スプレッドシートを開き直してください(編集者のみ使えます)');
   t('', '', '');
   t('section', '■ 配信予定の入れ方(直接入力する場合)');
@@ -1097,6 +1194,7 @@ function buildGuideSheet(){
   t('', '評価の基準', '同じチャネルの過去の配信の中央値と比べ、開封率・クリック率の総合が1.2倍以上で「◎ 良い」、0.8倍以下で「△ 要改善」。送信数' + MIN_SENT + '未満は対象外');
   t('', '改善案・参考ポイント', '「〇〇年_分析」タブの下の方「配信ごとの評価とコメント」に、配信ごとの改善案(△)と参考ポイント(◎)があります');
   t('', '事前チェック', '配信予定の「事前チェック」欄に、送る前の目安(おすすめの時刻・曜日、告知日数、同じ種類の過去の結果、前後の配信との間隔)が自動で入ります');
+  t('', 'ホームページへの効果', '年別タブの「サイト訪問(GA4)・資料請求・見学会予約・MH予約」の列と、分析タブの「ホームページへの効果」に、Googleアナリティクスの数字が入ります。名札付きリンクで配信した分だけ数えられます');
   t('', 'LINEの日付', 'LINEの実績の日付は、エルメでURLを登録した日時です。実際の配信日時とずれることがあります');
   t('', '', '');
   t('section', '■ 困ったとき');
