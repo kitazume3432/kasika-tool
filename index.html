@@ -1057,6 +1057,7 @@ function parsePlans(sheets){
     const row = sh.values[r], g = k => idx[k] === undefined ? '' : String(row[idx[k]] ?? '').trim();
     const p = {}; PLAN_MANUAL.forEach(k => p[k] = g(k));
     p.linkId = g('linkId'); p.tplKey = g('tplKey'); p.prevDelivered = g('delivered');
+    p.prev = { state: g('state'), check: g('check'), openRate: g('openRate'), clickRate: g('clickRate'), grade: g('grade') };   // 前回の結果(完了を保つため)
     const olds = [['件名','oldSubject'],['目的','oldPurpose'],['担当','oldOwner']].map(([l,k]) => g(k) ? `${l}:${g(k)}` : '').filter(Boolean);
     if(olds.length) p.memo = [p.memo, olds.join(' / ')].filter(Boolean).join(' / ');   // 削除した列の内容はメモへ移す
     if(/^■/.test(p.planDate) && (!p.name || /^\d+件$/.test(p.name))) continue;   // 月の区切り行
@@ -1351,9 +1352,13 @@ function buildPlanSheet(plans, lk, an, all, ga){
         : p.month ? (monthEnd < today ? '要確認(配信月を過ぎています)' : `予定(${p.month.m}月中・日付未定)`)
         : '予定(日付未定)';
       if(v.state === '中止') v.check = '';
-      v.linkId = lineSent ? p.linkId : ''; v.delivered = lineSent ? (p.prevDelivered || '') : ''; v.openRate = ''; v.clickRate = ''; v.grade = '';
+      v.linkId = p.linkId || ''; v.delivered = lineSent ? (p.prevDelivered || '') : ''; v.openRate = ''; v.clickRate = ''; v.grade = '';   // ひも付けの記録は消さない
       if(v.state !== '中止' && !/^配信済み/.test(v.state)) v.check = planCheck(p, an, all, plans, null);
       if(gaHit && v.state === '配信済み(GA4で確認)'){ const cv = gaHit.req + gaHit.oh + gaHit.mh; v.check = `ホームページ(GA4):訪問 ${gaHit.visits}件` + (cv ? `・成果 ${cv}件` : ''); }
+      // 一度「配信済み」になった予定は、その日の読み取りで実績が取れなくても(ログイン切れ・GA4の取得失敗など)完了のまま保つ
+      if(!/^配信済み/.test(v.state) && v.state !== '中止' && /^配信済み/.test(p.prev && p.prev.state || '')){
+        v.state = p.prev.state; v.check = p.prev.check || ''; v.delivered = p.prevDelivered || ''; v.openRate = p.prev.openRate || ''; v.clickRate = p.prev.clickRate || ''; v.grade = p.prev.grade || '';
+      }
     }
     v.tplKey = p.tplKey || '';
     return { p, v, done: v.state === '配信済み' };
