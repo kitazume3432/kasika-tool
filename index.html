@@ -262,7 +262,7 @@ async function syncSheet(opts){
   if(sel) incoming = incoming.filter(r => sel.includes(+String(r.sendAt).slice(0,4)));
   say('スプレッドシートを読み込み中…');
   let read;
-  try { read = await call({ action:'read', include:[PLAN_SHEET] }); }
+  try { read = await call({ action:'read', include:[PLAN_SHEET], webapp: opts.url }); }
   catch(e){ return { ok:false, error:'スプレッドシートに接続できませんでした。URLと、Apps Scriptのデプロイ設定(アクセスできるユーザー:全員)を確認してください。' }; }
   if(!read.ok) return { ok:false, error: read.error || '不明なエラー' };
   if(!read.sheets) return { ok:false, error:'スプレッドシート側のApps Scriptが古い版です。最新のコードに貼り替えて「新バージョン」でデプロイしてください。' };
