@@ -536,7 +536,10 @@ async function crawlLmeUrl(progress){
   const toRow = u => {
     const send = Number(u.number_send) || 0, view = Number(u.count_view), click = Number(u.user_number_click) || 0;
     if(!(send > LINE_MIN_SEND) || isNaN(view) || view < click) return null;   // 開封数が「-」表示のものは除く
-    const at = String(u.created_at || '').replace('T',' ').slice(0,16);
+    let at = String(u.created_at || '').replace('T',' ').slice(0,16);
+    // エルメの日付はURLの登録日。リンクの名札に配信日(utm_campaign=YYYYMMDD)があれば、そちらを配信日として使う
+    const cm = String(u.url || u.name || '').match(/utm_campaign=(\d{4})(\d{2})(\d{2})/);
+    if(cm) at = `${cm[1]}-${cm[2]}-${cm[3]} ${at.slice(11,16) || '00:00'}`;
     return { isNew:'', channel:'LINE', rid: 'lme-' + u.id, status:'配信済み', name: u.name || u.url || '', subject:'', target:'LINE友だち', sendAt: at, updatedAt:'',
       delivered: send, opened: view, openRate: Math.round(view / send * 10000) / 10000, clicked: click, clickRate: Math.round(click / send * 10000) / 10000,
       linked: null, cv: null, url: u.url || '', targetUrl:'', csvUrl:'', memo:'' };
