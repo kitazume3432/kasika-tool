@@ -262,7 +262,7 @@ async function syncSheet(opts){
   if(sel) incoming = incoming.filter(r => sel.includes(+String(r.sendAt).slice(0,4)));
   say('スプレッドシートを読み込み中…');
   let read;
-  try { read = await call({ action:'read', include:[PLAN_SHEET], webapp: opts.url }); }
+  try { read = await call({ action:'read', include:[PLAN_SHEET], webapp: opts.url, youtube: true }); }
   catch(e){ return { ok:false, error:'スプレッドシートに接続できませんでした。URLと、Apps Scriptのデプロイ設定(アクセスできるユーザー:全員)を確認してください。' }; }
   if(!read.ok) return { ok:false, error: read.error || '不明なエラー' };
   if(!read.sheets) return { ok:false, error:'スプレッドシート側のApps Scriptが古い版です。最新のコードに貼り替えて「新バージョン」でデプロイしてください。' };
@@ -280,6 +280,7 @@ async function syncSheet(opts){
   const planFull = (read.version || 0) >= 7;
   const plans = planOK ? parsePlans(read.sheets) : [];
   const tplAdded = planOK ? ensureTemplates(plans) : [];
+  const ytInfo = planOK && read.youtube ? ensureYoutube(plans, read.youtube) : { added: 0, moved: 0 };
   const lk = linkPlans(plans, mg.all);
   // GA4(Apps Script ver.12以降)
   let ga = null, gaNote = '';
@@ -290,7 +291,7 @@ async function syncSheet(opts){
   }
   const gaOrphans = ga ? gaAttach(mg.all, ga, lk) : [];
   if(ga) gaComment(mg.all, an);
-  const planInfo = { total: plans.length, linked: lk.links.size, fresh: lk.fresh.map(x => ({ plan: x.p.name || x.p.subject, actual: x.r.name, sendAt: x.r.sendAt })), hasSheet: read.sheets.some(s => s.name === PLAN_SHEET), supported: planOK, full: planFull, tplAdded: tplAdded.length };
+  const planInfo = { total: plans.length, linked: lk.links.size, fresh: lk.fresh.map(x => ({ plan: x.p.name || x.p.subject, actual: x.r.name, sendAt: x.r.sendAt })), hasSheet: read.sheets.some(s => s.name === PLAN_SHEET), supported: planOK, full: planFull, tplAdded: tplAdded.length, ytAdded: ytInfo.added, ytMoved: ytInfo.moved, ytError: read.ytError || '' };
   const res = { ok:true, dryRun: !!opts.dryRun, time: t, years: years.slice().sort((a,b)=>b-a), updated: mg.updated, added: mg.added, unchanged: mg.unchanged,
     good: mg.all.filter(r => inYears(r) && gradeOf(r) === '◎ 良い').length, bad: mg.all.filter(r => inYears(r) && gradeOf(r) === '△ 要改善').length, legacy, plan: planInfo,
     ga: ga ? { days: Object.keys(ga.map).length, matched: mg.all.filter(r => r.ga && inYears(r)).length } : null, gaNote };
@@ -317,8 +318,9 @@ function syncResultHtml(res){
   h += `対象の年:${res.years.join('・')}年 / 数字を更新:${res.updated.length}件 / 追加:${res.added.length}件 / 変更なし:${res.unchanged}件<br>評価:◎ 良い ${res.good}件 / △ 要改善 ${res.bad}件`;
   if(res.plan.supported && !res.plan.full) h += '<br><span class="err">対象のプルダウン・色分け・中央揃え・「中止」の即時灰色表示を使うには、Apps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください。</span>';
   if(!res.plan.supported) h += '<br><span class="err">「配信予定」タブを使うには、スプレッドシートのApps Scriptを最新版に貼り替えて「新バージョン」でデプロイしてください(実績の転記は通常どおり行っています)。</span>';
-  else h += `<br>配信予定:${res.plan.total}件(実績とひも付け ${res.plan.linked}件${res.plan.fresh.length ? '、今回新たに ' + res.plan.fresh.length + '件' : ''}${res.plan.tplAdded ? '、定例配信を ' + res.plan.tplAdded + '件追加' : ''})${res.plan.hasSheet ? '' : ' ※「配信予定」タブを作成' + (res.dryRun ? 'します' : 'しました')}`;
+  else h += `<br>配信予定:${res.plan.total}件(実績とひも付け ${res.plan.linked}件${res.plan.fresh.length ? '、今回新たに ' + res.plan.fresh.length + '件' : ''}${res.plan.tplAdded ? '、定例配信を ' + res.plan.tplAdded + '件追加' : ''}${res.plan.ytAdded ? '、YouTube公開のお知らせを ' + res.plan.ytAdded + '件追加' : ''}${res.plan.ytMoved ? '、YouTubeの公開日変更で ' + res.plan.ytMoved + '件の日付を変更' : ''})${res.plan.hasSheet ? '' : ' ※「配信予定」タブを作成' + (res.dryRun ? 'します' : 'しました')}`;
   if(res.plan.fresh.length) h += '<h3>予定と実績のひも付け</h3><ul>' + res.plan.fresh.map(f => `<li>予定「${esc(f.plan)}」→ ${esc(f.sendAt)} ${esc(f.actual)}</li>`).join('') + '</ul>';
+  if(res.plan && res.plan.ytError) h += `<br><span class="err">YouTube公開スケジュールを読めませんでした:${esc(res.plan.ytError)}</span>`;
   if(res.ga) h += `<br>Googleアナリティクス:配信日 ${res.ga.days}日分を取得、${res.ga.matched}件の配信にひも付け`;
   if(res.gaNote) h += `<br><span class="err">${esc(res.gaNote)}</span>`;
   if(res.legacy.length) h += `<br>以前の形式のシート(${res.legacy.map(esc).join('・')})は、新しい形式に移して削除${res.dryRun ? 'します' : 'しました'}。`;
@@ -1004,6 +1006,41 @@ PLAN_TEMPLATES.filter(t => /ソトウチ|レノ|リラクラス/.test(t.name) &&
 function tplKeyOf_(y, m, t){ return `${y}-${('0'+m).slice(-2)} ${t.name}${t.keySuffix || ''}`; }
 function tplMonth_(key){ const m = String(key || '').match(/(\d{4})-(\d{2})/); return m ? { y: +m[1], m: +m[2] } : null; }
 // 定例配信を予定に入れる(既にあれば何もしない。手入力の同じ月・似た名前の予定があれば、それを定例として扱う)
+/* --- YouTube公開スケジュール(AIMY様のプロジェクトシート)から、公開のお知らせを配信予定に入れる ---
+   公開予定日(なければ公開日)の翌日 21:05、LINE新規・LINE全員・メール(新規)・メール(全員)。
+   公開日が変わったときは、まだ送っていない(ひも付き・配信済・中止でない)予定の日付も合わせて直す */
+const YT_TARGETS = ['LINE新規', 'LINE全員', '新規（見込み顧客）', '全員（見込み顧客、OB顧客）'];
+const YT_TIME = '21:05', YT_DAYS_AFTER = 1;
+function ytDate_(s){
+  const m = String(s || '').match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  return m ? new Date(+m[1], m[2] - 1, +m[3]) : null;   // 年のない古い日付(1/20 など)は対象外
+}
+function ensureYoutube(plans, rows){
+  const today = new Date(); today.setHours(0,0,0,0);
+  let added = 0, moved = 0;
+  const fmt = d => `${d.getFullYear()}/${('0'+(d.getMonth()+1)).slice(-2)}/${('0'+d.getDate()).slice(-2)}`;
+  (rows || []).forEach(r => {
+    const pub = ytDate_(r.planned) || ytDate_(r.published);
+    if(!pub) return;
+    const send = new Date(pub.getFullYear(), pub.getMonth(), pub.getDate() + YT_DAYS_AFTER);
+    const name = `YouTube${r.kind === 'ショート' ? 'ショート' : ''}公開:${String(r.title).replace(/｜.*$/, '').replace(/\s*#shorts\s*$/i, '').trim()}`;
+    YT_TARGETS.forEach(t => {
+      const key = `yt-${r.kind}${r.no}|${t}`;
+      const p = plans.find(x => x.tplKey === key);
+      if(p){
+        const sent = p.linkId || /配信済|送信済|中止/.test(p.memo || '');
+        if(!sent && (!p.date || p.date.getTime() !== send.getTime())){ p.planDate = fmt(send); p.date = send; moved++; }
+        if(!sent && p.name !== name) p.name = name;
+        return;
+      }
+      if(send < today) return;   // 送る日を過ぎたものは新しく追加しない
+      plans.push({ planDate: fmt(send), name, eventDate:'', planTime: YT_TIME, target: t, memo:'YouTube公開スケジュールから自動追加',
+        linkId:'', tplKey: key, date: send, time: YT_TIME, ch: chFromTarget_(t) });
+      added++;
+    });
+  });
+  return { added, moved };
+}
 function ensureTemplates(plans){
   const now = new Date(), added = [];
   for(let i = 0; i < 12; i++){
